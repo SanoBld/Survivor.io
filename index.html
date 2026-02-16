@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <title>Survivor.io Massive - Multijoueur</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <!-- Écran de personnalisation -->
+    <div id="customizationScreen" class="screen active">
+        <div class="screen-container">
+            <div class="menu-header">
+                <h1>🎮 SURVIVOR.IO 🎮</h1>
+                <p class="subtitle">Monde Massif - 10 Joueurs</p>
+            </div>
+            
+            <div class="menu-content">
+                <!-- High Score & Trophées en ligne -->
+                <div class="top-info">
+                    <div class="high-score-compact">
+                        <span class="trophy">🏆</span>
+                        <div>
+                            <div class="label">Record</div>
+                            <div id="highScoreValue" class="value">0</div>
+                        </div>
+                    </div>
+                    
+                    <div class="trophies-compact">
+                        <div class="trophy-count">
+                            <span>🏅</span>
+                            <span id="trophyCount">0/8</span>
+                        </div>
+                        <div id="trophiesPreview" class="trophies-mini"></div>
+                    </div>
+                </div>
+
+                <!-- Personnalisation compacte -->
+                <div class="customization-compact">
+                    <input type="text" id="playerName" placeholder="Ton Pseudo" maxlength="12" value="Joueur" />
+                    
+                    <div class="emoji-selector-compact">
+                        <button class="emoji-btn selected" data-emoji="😎">😎</button>
+                        <button class="emoji-btn" data-emoji="🤠">🤠</button>
+                        <button class="emoji-btn" data-emoji="🥷">🥷</button>
+                        <button class="emoji-btn" data-emoji="🦸">🦸</button>
+                        <button class="emoji-btn" data-emoji="🧙">🧙</button>
+                        <button class="emoji-btn" data-emoji="🤖">🤖</button>
+                        <button class="emoji-btn" data-emoji="👽">👽</button>
+                        <button class="emoji-btn" data-emoji="🐱">🐱</button>
+                    </div>
+                </div>
+
+                <div class="menu-buttons">
+                    <button id="btnCreateGame" class="btn btn-primary">
+                        🌐 Héberger une Partie
+                    </button>
+                    <button id="btnJoinGame" class="btn btn-secondary">
+                        🔗 Rejoindre une Partie
+                    </button>
+                    <button id="btnSoloGame" class="btn btn-tertiary">
+                        👤 Jouer en Solo
+                    </button>
+                </div>
+
+                <!-- Section pour rejoindre avec clavier numérique -->
+                <div id="joinSection" class="join-section hidden">
+                    <p class="join-title">Code PIN à 6 chiffres :</p>
+                    <div class="pin-display">
+                        <span class="pin-digit" id="pin1">-</span>
+                        <span class="pin-digit" id="pin2">-</span>
+                        <span class="pin-digit" id="pin3">-</span>
+                        <span class="pin-digit" id="pin4">-</span>
+                        <span class="pin-digit" id="pin5">-</span>
+                        <span class="pin-digit" id="pin6">-</span>
+                    </div>
+                    <div class="numpad">
+                        <button class="numpad-btn" data-num="1">1</button>
+                        <button class="numpad-btn" data-num="2">2</button>
+                        <button class="numpad-btn" data-num="3">3</button>
+                        <button class="numpad-btn" data-num="4">4</button>
+                        <button class="numpad-btn" data-num="5">5</button>
+                        <button class="numpad-btn" data-num="6">6</button>
+                        <button class="numpad-btn" data-num="7">7</button>
+                        <button class="numpad-btn" data-num="8">8</button>
+                        <button class="numpad-btn" data-num="9">9</button>
+                        <button class="numpad-btn numpad-clear" data-num="clear">⌫</button>
+                        <button class="numpad-btn" data-num="0">0</button>
+                        <button class="numpad-btn numpad-ok" data-num="ok">✓</button>
+                    </div>
+                    <button id="btnCancelJoin" class="btn btn-cancel">Annuler</button>
+                </div>
+
+                <!-- Section hôte avec code PIN -->
+                <div id="hostSection" class="host-section hidden">
+                    <p class="host-title">Code PIN :</p>
+                    <div class="pin-display-host">
+                        <span id="hostPinCode">------</span>
+                    </div>
+                    <button id="btnCopyPin" class="btn-copy">📋 Copier</button>
+                    
+                    <div class="waiting-area">
+                        <p class="waiting-text">En attente...</p>
+                        <div id="connectedPlayers" class="connected-players"></div>
+                    </div>
+                    
+                    <button id="btnStartGame" class="btn btn-success">🚀 Démarrer (1/10)</button>
+                    <button id="btnCancelHost" class="btn btn-cancel">Annuler</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Menu d'amélioration -->
+    <div id="upgradeMenu" class="upgrade-menu hidden">
+        <div class="upgrade-container">
+            <h2>⚡ NIVEAU SUPÉRIEUR !</h2>
+            <p class="upgrade-subtitle">Choisis une amélioration :</p>
+            <div id="upgradeOptions" class="upgrade-options"></div>
+        </div>
+    </div>
+
+    <!-- Interface de jeu -->
+    <div id="gameUI" class="game-ui hidden">
+        <!-- Indicateur Online -->
+        <div id="onlineIndicator" class="online-indicator">
+            <div class="online-dot"></div>
+            <span id="playerCountDisplay">1</span>
+            <span class="ping-text" id="pingText">0ms</span>
+        </div>
+
+        <!-- Barre d'XP -->
+        <div class="xp-bar-container">
+            <div class="xp-info">
+                <span id="levelDisplay">NIV. 1</span>
+                <span id="xpDisplay">0 / 100 XP</span>
+            </div>
+            <div class="xp-bar">
+                <div id="xpFill" class="xp-fill"></div>
+            </div>
+        </div>
+
+        <!-- Stats joueur -->
+        <div class="player-stats">
+            <div class="stat player-info">
+                <span id="playerEmoji" class="stat-icon">😎</span>
+                <span id="playerNameDisplay">Joueur</span>
+            </div>
+            <div class="stat">
+                <span class="stat-icon">❤️</span>
+                <span id="healthDisplay">100</span>
+            </div>
+            <div class="stat">
+                <span class="stat-icon">⚔️</span>
+                <span id="damageDisplay">10</span>
+            </div>
+            <div class="stat">
+                <span class="stat-icon">🎯</span>
+                <span id="killCount">0</span>
+            </div>
+            <div class="stat score-stat">
+                <span class="stat-icon">⭐</span>
+                <span id="scoreDisplay">0</span>
+            </div>
+        </div>
+
+        <!-- Leaderboard -->
+        <div class="leaderboard">
+            <div class="leaderboard-header">🏆 TOP 10</div>
+            <div id="leaderboardContent" class="leaderboard-content"></div>
+        </div>
+
+        <!-- Info vague -->
+        <div class="wave-info">
+            <span id="waveDisplay">VAGUE 1</span>
+            <span id="enemyCount">0 ENNEMIS</span>
+        </div>
+
+        <!-- Minimap -->
+        <div class="minimap">
+            <canvas id="minimapCanvas" width="150" height="150"></canvas>
+            <div class="minimap-label">CARTE</div>
+        </div>
+
+        <!-- Bouton compétence spéciale -->
+        <div class="special-ability-btn">
+            <button id="abilityBtn" class="ability-button">
+                <span class="ability-icon">💥</span>
+                <svg class="ability-cooldown" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r="45" class="cooldown-bg"></circle>
+                    <circle id="cooldownCircle" cx="50" cy="50" r="45" class="cooldown-fill"></circle>
+                </svg>
+            </button>
+            <div class="ability-key-hint">ESPACE</div>
+        </div>
+    </div>
+
+    <!-- Joystick virtuel (tactile) -->
+    <div id="joystickContainer" class="joystick-container hidden">
+        <div id="joystickOuter" class="joystick-outer">
+            <div id="joystickInner" class="joystick-inner"></div>
+        </div>
+    </div>
+
+    <!-- Canvas principal -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Game Over -->
+    <div id="gameOverScreen" class="game-over hidden">
+        <div class="game-over-container">
+            <h1>💀 GAME OVER 💀</h1>
+            
+            <div class="final-score-card">
+                <div class="final-score-label">TON SCORE</div>
+                <div id="finalScore" class="final-score-value">0</div>
+                <div id="newHighScore" class="new-high-score hidden">
+                    🎉 NOUVEAU RECORD ! 🎉
+                </div>
+            </div>
+
+            <!-- Statistiques détaillées -->
+            <div class="detailed-stats">
+                <h3>📊 STATISTIQUES</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-label">⏱️ Temps</div>
+                        <div id="timeSurvived" class="stat-value">0:00</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">🎯 Kills</div>
+                        <div id="totalKills" class="stat-value">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">💥 Dégâts</div>
+                        <div id="totalDamage" class="stat-value">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">📈 DPS</div>
+                        <div id="avgDPS" class="stat-value">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">🔫 Arme</div>
+                        <div id="favoriteWeapon" class="stat-value">Pistolet</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">🌊 Vague</div>
+                        <div id="waveReached" class="stat-value">1</div>
+                    </div>
+                </div>
+
+                <div class="kills-breakdown">
+                    <h4>🧟 Kills par Type</h4>
+                    <div id="killsByType" class="kills-by-type"></div>
+                </div>
+            </div>
+
+            <!-- Trophées débloqués -->
+            <div id="unlockedTrophies" class="unlocked-trophies hidden">
+                <h3>🏅 NOUVEAUX TROPHÉES !</h3>
+                <div id="newTrophiesList" class="new-trophies-list"></div>
+            </div>
+
+            <div class="final-leaderboard">
+                <h3>🏆 CLASSEMENT FINAL</h3>
+                <div id="finalLeaderboardContent" class="final-leaderboard-content"></div>
+            </div>
+
+            <div class="game-over-buttons">
+                <button id="btnShareScore" class="btn btn-share">📤 Partager</button>
+                <button id="btnRestart" class="btn btn-primary">🔄 Rejouer</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
