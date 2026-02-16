@@ -3,7 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="theme-color" content="#667eea">
     <title>Survivor.io Massive - Multijoueur</title>
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
     <link rel="stylesheet" href="style.css">
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
@@ -17,7 +23,7 @@
             </div>
             
             <div class="menu-content">
-                <!-- High Score & Trophées en ligne -->
+                <!-- High Score & Trophées -->
                 <div class="top-info">
                     <div class="high-score-compact">
                         <span class="trophy">🏆</span>
@@ -36,7 +42,7 @@
                     </div>
                 </div>
 
-                <!-- Personnalisation compacte -->
+                <!-- Personnalisation -->
                 <div class="customization-compact">
                     <input type="text" id="playerName" placeholder="Ton Pseudo" maxlength="12" value="Joueur" />
                     
@@ -53,46 +59,23 @@
                 </div>
 
                 <div class="menu-buttons">
-                    <button id="btnCreateGame" class="btn btn-primary">
-                        🌐 Héberger une Partie
-                    </button>
-                    <button id="btnJoinGame" class="btn btn-secondary">
-                        🔗 Rejoindre une Partie
-                    </button>
-                    <button id="btnSoloGame" class="btn btn-tertiary">
-                        👤 Jouer en Solo
-                    </button>
+                    <button id="btnCreateGame" class="btn btn-primary">🌐 Héberger une Partie</button>
+                    <button id="btnJoinGame" class="btn btn-secondary">🔗 Rejoindre une Partie</button>
+                    <button id="btnSoloGame" class="btn btn-tertiary">👤 Jouer en Solo</button>
                 </div>
 
-                <!-- Section pour rejoindre avec clavier numérique -->
+                <!-- Section rejoindre avec INPUT NATIF -->
                 <div id="joinSection" class="join-section hidden">
                     <p class="join-title">Code PIN à 6 chiffres :</p>
-                    <div class="pin-display">
-                        <span class="pin-digit" id="pin1">-</span>
-                        <span class="pin-digit" id="pin2">-</span>
-                        <span class="pin-digit" id="pin3">-</span>
-                        <span class="pin-digit" id="pin4">-</span>
-                        <span class="pin-digit" id="pin5">-</span>
-                        <span class="pin-digit" id="pin6">-</span>
+                    <input type="number" id="pinInput" class="pin-input-native" placeholder="000000" 
+                           maxlength="6" pattern="[0-9]*" inputmode="numeric">
+                    <div class="join-buttons">
+                        <button id="btnConfirmJoin" class="btn btn-success">✓ Rejoindre</button>
+                        <button id="btnCancelJoin" class="btn btn-cancel">Annuler</button>
                     </div>
-                    <div class="numpad">
-                        <button class="numpad-btn" data-num="1">1</button>
-                        <button class="numpad-btn" data-num="2">2</button>
-                        <button class="numpad-btn" data-num="3">3</button>
-                        <button class="numpad-btn" data-num="4">4</button>
-                        <button class="numpad-btn" data-num="5">5</button>
-                        <button class="numpad-btn" data-num="6">6</button>
-                        <button class="numpad-btn" data-num="7">7</button>
-                        <button class="numpad-btn" data-num="8">8</button>
-                        <button class="numpad-btn" data-num="9">9</button>
-                        <button class="numpad-btn numpad-clear" data-num="clear">⌫</button>
-                        <button class="numpad-btn" data-num="0">0</button>
-                        <button class="numpad-btn numpad-ok" data-num="ok">✓</button>
-                    </div>
-                    <button id="btnCancelJoin" class="btn btn-cancel">Annuler</button>
                 </div>
 
-                <!-- Section hôte avec code PIN -->
+                <!-- Section hôte -->
                 <div id="hostSection" class="host-section hidden">
                     <p class="host-title">Code PIN :</p>
                     <div class="pin-display-host">
@@ -123,14 +106,12 @@
 
     <!-- Interface de jeu -->
     <div id="gameUI" class="game-ui hidden">
-        <!-- Indicateur Online -->
         <div id="onlineIndicator" class="online-indicator">
             <div class="online-dot"></div>
             <span id="playerCountDisplay">1</span>
             <span class="ping-text" id="pingText">0ms</span>
         </div>
 
-        <!-- Barre d'XP -->
         <div class="xp-bar-container">
             <div class="xp-info">
                 <span id="levelDisplay">NIV. 1</span>
@@ -141,7 +122,6 @@
             </div>
         </div>
 
-        <!-- Stats joueur -->
         <div class="player-stats">
             <div class="stat player-info">
                 <span id="playerEmoji" class="stat-icon">😎</span>
@@ -165,25 +145,21 @@
             </div>
         </div>
 
-        <!-- Leaderboard -->
         <div class="leaderboard">
             <div class="leaderboard-header">🏆 TOP 10</div>
             <div id="leaderboardContent" class="leaderboard-content"></div>
         </div>
 
-        <!-- Info vague -->
         <div class="wave-info">
             <span id="waveDisplay">VAGUE 1</span>
             <span id="enemyCount">0 ENNEMIS</span>
         </div>
 
-        <!-- Minimap -->
         <div class="minimap">
             <canvas id="minimapCanvas" width="150" height="150"></canvas>
             <div class="minimap-label">CARTE</div>
         </div>
 
-        <!-- Bouton compétence spéciale -->
         <div class="special-ability-btn">
             <button id="abilityBtn" class="ability-button">
                 <span class="ability-icon">💥</span>
@@ -196,14 +172,13 @@
         </div>
     </div>
 
-    <!-- Joystick virtuel (tactile) -->
+    <!-- Joystick virtuel -->
     <div id="joystickContainer" class="joystick-container hidden">
         <div id="joystickOuter" class="joystick-outer">
             <div id="joystickInner" class="joystick-inner"></div>
         </div>
     </div>
 
-    <!-- Canvas principal -->
     <canvas id="gameCanvas"></canvas>
 
     <!-- Game Over -->
@@ -214,12 +189,9 @@
             <div class="final-score-card">
                 <div class="final-score-label">TON SCORE</div>
                 <div id="finalScore" class="final-score-value">0</div>
-                <div id="newHighScore" class="new-high-score hidden">
-                    🎉 NOUVEAU RECORD ! 🎉
-                </div>
+                <div id="newHighScore" class="new-high-score hidden">🎉 NOUVEAU RECORD ! 🎉</div>
             </div>
 
-            <!-- Statistiques détaillées -->
             <div class="detailed-stats">
                 <h3>📊 STATISTIQUES</h3>
                 <div class="stats-grid">
@@ -255,7 +227,6 @@
                 </div>
             </div>
 
-            <!-- Trophées débloqués -->
             <div id="unlockedTrophies" class="unlocked-trophies hidden">
                 <h3>🏅 NOUVEAUX TROPHÉES !</h3>
                 <div id="newTrophiesList" class="new-trophies-list"></div>
