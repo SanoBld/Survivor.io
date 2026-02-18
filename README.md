@@ -1,144 +1,195 @@
-# 🎮 SURVIVOR.IO MASSIVE - JEU MULTIJOUEUR OPTIMISÉ (BETA)
+# 🎮 SURVIVOR.IO — Arcade Edition
 
-## ✨ NOUVEAUTÉS ET OPTIMISATIONS
+<div align="center">
 
-### 🚀 SYNCHRONISATION & FLUIDITÉ ZÉRO LAG
-- **Mouvement Prédictif** : Le joueur local bouge instantanément sans attendre le réseau
-- **Interpolation Fluide (Lerp 0.15)** : Tous les objets distants (joueurs, monstres, XP) utilisent une interpolation linéaire pour éliminer les micro-saccades
-- **Fréquence Réseau 30Hz** : L'hôte diffuse les données toutes les 33ms avec compression JSON
-- **Visibilité Mondiale** : L'hôte envoie les positions de TOUS les monstres et orbes d'XP à tous les clients
+![Version](https://img.shields.io/badge/version-ARCADE--EDITION-ff6b6b?style=for-the-badge&logo=gamepad)
+![Players](https://img.shields.io/badge/joueurs-jusqu'à%2010-667eea?style=for-the-badge&logo=people)
+![PWA](https://img.shields.io/badge/PWA-prêt-2ecc71?style=for-the-badge&logo=pwa)
+![P2P](https://img.shields.io/badge/réseau-PeerJS%20P2P-f093fb?style=for-the-badge&logo=webrtc)
+![License](https://img.shields.io/badge/license-MIT-ffd700?style=for-the-badge)
 
-### 🧟 MONSTRES AVEC EMOJIS
-- **🧟 Zombie** : Monstre standard (30 HP, vitesse normale)
-- **👻 Fantôme** : Rapide mais fragile (15 HP, vitesse x2)
-- **👾 Alien** : Boss massif (100 HP, puissant, 50 points)
+**Jeu de survie multijoueur massif — Canvas HTML5 — 60 FPS — Zéro serveur**
 
-### 🏗️ PHYSIQUE & STRUCTURES
-- **Collisions AABB Réactivées** : Les joueurs et monstres ne peuvent plus traverser les obstacles
-- **Génération par Seed Fixe (42)** : Structures identiques pour tous (🧱 Murs, 📦 Caisses, 🏠 Maisons, 🌳 Arbres)
-- **Carte 5000x5000** : Monde massif pour 10 joueurs simultanés
+[Jouer](https://votre-lien.com) · [Signaler un Bug](https://github.com/votre/repo/issues) · [Contribuer](https://github.com/votre/repo/pulls)
 
-### 📈 DIFFICULTÉ CROISSANTE
-- **+10% toutes les 30 secondes** : Le nombre max de monstres et le taux d'apparition augmentent progressivement
-- **Système de Vagues** : Difficulté exponentielle pour des hordes massives
+</div>
 
-### ⚡ SYSTÈME DE BONUS CUMULABLES
-- **🏃 Vitesse +** : Bonus permanent de +1 vitesse par niveau
-- **⚔️ Dégâts +** : Bonus permanent de +5 dégâts par niveau
-- **⚡ Cadence +** : Réduction permanente de -50ms du cooldown par niveau
-- **❤️ HP Max +** : Augmentation permanente de +20 HP max par niveau
+---
 
-### 📱 INTERFACE OPTIMISÉE
-- **Zéro Scroll** : 100vh, pas de barre de défilement
-- **Lobby Dynamique** : Liste en temps réel des joueurs connectés avec emoji et pseudo
-- **Input Numérique Natif** : Utilise `<input type="number">` pour forcer le clavier numérique mobile (iOS/Android)
-- **Joystick Tactile** : Contrôles fluides sur mobile
+## ✨ Arcade Edition — Nouveautés
 
-### 🎨 RENDU SANS "TRUCS GRIS"
-- Tous les éléments visuels utilisent des emojis ou des dégradés avec ombre portée (`shadowBlur`)
-- Monstres : Emojis animés avec barres de vie
-- Structures : Emojis au lieu de rectangles gris
-- Particules et effets visuels colorés
+### 🎨 Personnalisation Avancée
+- **16 avatars emoji** : Combattants, animaux, créatures mythiques (🥷🐺🦊🐉🧛👹💀🦁…)
+- **8 couleurs d'aura** : Indigo, Rose, Vert, Bleu, Or, Rouge, Orange, Cyan — persistées en localStorage
+- **Profil sauvegardé** : Pseudo, emoji et couleur rechargés automatiquement à chaque visite
 
-### 📦 PWA READY
-- **manifest.json** : Métadonnées pour installation
-- **Service Worker** : Cache pour utilisation hors ligne
-- **Icônes** : Support pour installation sur écran d'accueil
+### 🏅 Onglet Succès & Scores
+- **Record absolu** : Score max, vague atteinte, temps de survie record
+- **Stats cumulées** : Total kills, morts, XP ramassé, parties jouées — sur toutes les parties
+- **Grille de badges** : 8+ succès avec icônes colorées (débloqués) ou grisées (verrouillées)
 
-## 🎯 FONCTIONNALITÉS DU JEU
+### 💥 Game Feel — Effets Visuels
+| Effet | Déclencheur | Description |
+|---|---|---|
+| **Screen Shake** 📷 | Dégâts reçus / Boss mort | Tremblement du canvas calibré par intensité |
+| **Impact Flash** ⚡ | Coup ennemi | Flash blanc sur l'ennemi touché (fondu 0.3s) |
+| **Particules colorées** 🎇 | Mort ennemi | Explosion utilisant la couleur propre du type |
+| **Aura dynamique** 🌟 | En permanence | Halo pulsant autour du joueur (couleur choisie) |
 
-### Mode Solo
-- Combat contre des hordes infinies de zombies
-- Système de progression avec niveaux et upgrades
-- 8 trophées déblocables
+### 🗂️ Interface à Onglets
+```
+[ 🎮 JOUER ] — Personnalisation + matchmaking
+[ 🏅 SUCCÈS ] — Records, stats cumulées, badges
+[ ⚙️ PARAMS ] — Performance, FPS, diagnostics
+```
 
-### Mode Multijoueur (jusqu'à 10 joueurs)
-- **Héberger une partie** : Génère un code PIN à 6 chiffres
-- **Rejoindre une partie** : Entre le code PIN avec clavier natif
-- Synchronisation P2P via PeerJS
-- Leaderboard en temps réel
+---
 
-### Système de Combat
-- Tir automatique vers l'ennemi le plus proche
-- Compétence spéciale (Espace) : Explosion de zone
-- Régénération passive de HP
-- Orbes d'XP magnétiques
+## 🚀 Installation
 
-### Progression
-- Gain d'XP en tuant des monstres
-- Montée de niveau avec menu d'amélioration
-- 4 types de bonus cumulables à l'infini
-- Score basé sur kills et temps de survie
+```bash
+# 1. Clone ou télécharge les fichiers
+git clone https://github.com/votre/survivor-io.git
+cd survivor-io
 
-## 📋 FICHIERS INCLUS
+# 2. Lance un serveur local (Node.js)
+npx serve .
+# ou Python
+python3 -m http.server 8080
 
-1. **index.html** : Structure HTML avec input natif pour PIN
-2. **style.css** : Design responsive, glassmorphism, sans scroll
-3. **script.js** : Logique complète avec interpolation, collisions, P2P
-4. **manifest.json** : Configuration PWA
-5. **sw.js** : Service Worker pour cache
-6. **README.md** : Ce fichier
+# 3. Ouvre dans le navigateur
+# http://localhost:8080
+```
 
-## 🚀 INSTALLATION
+> **💡 Conseil mobile** : Sur Chrome/Safari, utilise "Ajouter à l'écran d'accueil" pour l'expérience PWA fullscreen.
 
-1. Héberge tous les fichiers sur un serveur web (local ou distant)
-2. Ouvre `index.html` dans un navigateur moderne
-3. Sur mobile, ajoute le jeu à l'écran d'accueil pour une expérience PWA
+---
 
-## 🎮 CONTRÔLES
+## 🎮 Comment Jouer
 
-### PC
-- **ZQSD / WASD / Flèches** : Déplacement
-- **Espace** : Compétence spéciale
-- **Tir automatique** : Vers l'ennemi le plus proche
+### Démarrage rapide
+1. Saisis ton pseudo et choisis ton avatar + couleur d'aura
+2. **Solo** → Lance directement · **Héberger** → Partage le code PIN · **Rejoindre** → Entre le PIN à 6 chiffres
 
-### Mobile
-- **Joystick** : Déplacement tactile (bas gauche)
-- **Bouton 💥** : Compétence spéciale (bas gauche)
-- **Tir automatique** : Vers l'ennemi le plus proche
+### Contrôles
+| Plateforme | Déplacement | Compétence |
+|---|---|---|
+| **PC** | `ZQSD` / `WASD` / Flèches | `Espace` |
+| **Mobile** | Joystick tactile (bas gauche) | Toucher (droite) ou bouton 💥 |
 
-## 🏆 TROPHÉES
+### Système de Jeu
+- **Tir automatique** vers l'ennemi le plus proche dans un rayon de 420px
+- **Montée de niveau** via XP → Menu de 3 bonus aléatoires à choisir
+- **14 bonus cumulables** : Vitesse, Dégâts, Cadence, HP, Aura, Ricochet, Drones, Vampirisme, Aimant, Multi-tir, Mur, Mines, Bottes, Recyclage
+- **Difficulté +15%** toutes les 30 secondes (HP et vitesse ennemis)
 
-- 🩸 Premier Sang : Tue ton premier zombie
-- ⏱️ Survivant 5min : Survis 5 minutes
-- 🔪 Boucher : Tue 100 zombies
-- ⚔️ Massacreur : Tue 1000 zombies (cumulé)
-- 🔟 Niveau 10 : Atteins le niveau 10
-- 💯 10K Points : Atteins 10000 points
-- 🌊 Vague 10 : Atteins la vague 10
-- 💚 Santé Parfaite : Termine avec 100% HP
+---
 
-## 🔧 CONFIGURATION TECHNIQUE
+## 🧟 Types d'Ennemis
 
-### Paramètres Réseau
-- **ENEMY_SYNC_RATE** : 33ms (30Hz)
-- **INTERPOLATION_SPEED** : 0.15 (lerp fluide)
-- **MAX_PLAYERS** : 10
+| Emoji | Nom | HP | Vitesse | Particularité |
+|---|---|---|---|---|
+| 🧟 | Zombie | 30 | Normale | Standard |
+| 👻 | Fantôme | 15 | ×2.4 | Semi-transparent |
+| 👾 | Alien | 120 | Lente | Tire des projectiles |
+| 🐂 | Minotaure | 200 | ×1.7 | Charge violente |
+| 🍄 | Fungus | 60 | Très lente | Nuage toxique |
+| 🕷️ | Araignée | 45 | Rapide | Ralentit le joueur |
 
-### Paramètres Monde
-- **WORLD_SIZE** : 5000x5000
-- **STRUCTURE_SEED** : 42 (génération déterministe)
+---
 
-### Paramètres Difficulté
-- **DIFFICULTY_INCREASE_INTERVAL** : 30000ms (30 secondes)
-- **DIFFICULTY_INCREASE_RATE** : 0.1 (10%)
+## 🏆 Succès Disponibles
 
-## 💡 NOTES IMPORTANTES
+| Badge | Nom | Condition |
+|---|---|---|
+| 🩸 | Premier Sang | Tuer 1 ennemi |
+| ⏱️ | Survivant 5min | Survivre 5 minutes |
+| 🔪 | Boucher | Tuer 100 ennemis |
+| ⚔️ | Massacreur | 1000 kills cumulés |
+| 🔟 | Niveau 10 | Atteindre le niveau 10 |
+| 💯 | 10K Points | Atteindre 10 000 points |
+| 🌊 | Vague 10 | Atteindre la vague 10 |
+| 💚 | Santé Parfaite | Finir avec 100% HP |
 
-- Le jeu nécessite une connexion internet pour le mode multijoueur (PeerJS)
-- Les données de sauvegarde (high score, trophées) sont stockées en localStorage
-- Le mode PWA fonctionne hors ligne une fois les fichiers en cache
-- Pour une meilleure performance, utilise Chrome ou Edge sur desktop, Safari sur iOS
+---
 
-## 🐛 BUGS CORRIGÉS
+## ⚡ Architecture Technique
 
-✅ Micro-saccades des objets distants (interpolation ajoutée)
-✅ Collisions désactivées (AABB réactivé)
-✅ Structures différentes entre joueurs (seed fixe)
-✅ Clavier numérique ne s'ouvre pas (input natif)
-✅ Scroll sur mobile (100vh strict)
-✅ Éléments "gris" (remplacés par emojis)
-✅ Tableaux non vidés entre parties (`.length = 0`)
-✅ Bonus non cumulables (système de bonuses)
-✅ Monstres sans emoji (types avec emojis)
-✅ Orbes XP non visibles pour clients (broadcast ajouté)
+### Performance (60 FPS cible)
+- **Object Pool** : 600 particules + 100 dommages — zéro GC en hot path
+- **Spatial Grid** : Détection collisions O(1) — obstacles statique, ennemis dynamique
+- **Frustum Culling** : Rendu uniquement des entités dans le viewport + marge
+- **Batch Rendering** : `ctx.font` défini une fois par type pour 600 ennemis
+- **Mode Performance** : Désactive ombres, simplifie géométries
+
+### Réseau P2P (PeerJS)
+- **30Hz** broadcast état du monde (ennemis + positions)
+- **Interpolation Lerp 0.15** : Mouvement fluide des objets distants
+- **Zéro sync visuelle** : Particules générées localement, jamais envoyées
+- **Seed déterministe** : Monde identique garanti pour tous (seed envoyée au démarrage)
+
+### Persistance (localStorage)
+| Clé | Contenu |
+|---|---|
+| `sio_name` | Pseudo joueur |
+| `sio_emoji` | Avatar choisi |
+| `sio_aura` | Couleur d'aura |
+| `sio_hs` | Record de score |
+| `sio_bestWave` | Meilleure vague |
+| `sio_bestTime` | Meilleur temps de survie |
+| `sio_cumKills` | Total kills cumulés |
+| `sio_cumDeaths` | Total morts |
+| `sio_cumXP` | Total XP ramassé |
+| `sio_cumGames` | Nombre de parties |
+
+---
+
+## 📁 Fichiers
+
+```
+📦 survivor-io/
+├── 🎮 index.html      — Structure + UI (tabs, achievements, aura picker)
+├── 🎨 style.css       — Design glassmorphism, tabs, badges
+├── ⚙️ script.js       — Logique complète (game loop, réseau, rendu)
+├── 📋 manifest.json   — PWA metadata
+├── 🔧 sw.js           — Service Worker (cache offline)
+└── 📖 README.md       — Ce fichier
+```
+
+---
+
+## 🔧 Configuration Rapide
+
+```javascript
+// Dans script.js → const CFG = { ... }
+CFG.WORLD          = 5000      // Taille de la carte
+CFG.MAX_PLAYERS    = 10        // Joueurs simultanés
+CFG.SYNC_RATE      = 33        // Hz réseau (33ms = ~30Hz)
+CFG.ABILITY_CD     = 10000     // Cooldown compétence (ms)
+CFG.DIFF_RATE      = 0.15      // Scaling difficulté par vague (+15%)
+CFG.MAX_ENEMY_CAP  = 600       // Cap absolu d'ennemis
+CFG.SHOOT_RANGE    = 420       // Portée de tir auto
+```
+
+---
+
+## 🤝 Compatibilité
+
+| Navigateur | Solo | Multi | PWA |
+|---|---|---|---|
+| Chrome 90+ | ✅ | ✅ | ✅ |
+| Edge 90+ | ✅ | ✅ | ✅ |
+| Firefox 88+ | ✅ | ✅ | ❌ |
+| Safari 15+ | ✅ | ✅ | ✅ |
+| Mobile Chrome | ✅ | ✅ | ✅ |
+| Mobile Safari | ✅ | ✅ | ✅ |
+
+> Le mode multijoueur nécessite une connexion internet (serveur de signaling PeerJS).
+
+---
+
+<div align="center">
+
+Fait avec ❤️ · Canvas HTML5 · PeerJS WebRTC · Zero dependencies sauf PeerJS
+
+</div>

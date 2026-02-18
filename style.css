@@ -545,3 +545,110 @@ html, body {
 @media (min-width: 480px) {
     .btn-xl { font-size: 1.12rem; }
 }
+
+/* ===== TABS ===== */
+.menu-tabs {
+    display: flex; gap: 4px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 14px; padding: 4px;
+}
+.tab-btn {
+    flex: 1; padding: 10px 6px;
+    background: transparent; border: none;
+    color: rgba(255,255,255,0.5); font-size: 0.78rem; font-weight: 700;
+    border-radius: 10px; cursor: pointer; transition: all .2s;
+    letter-spacing: 0.3px;
+}
+.tab-btn:hover { color: rgba(255,255,255,0.8); background: rgba(255,255,255,0.05); }
+.tab-btn.active {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff; box-shadow: 0 2px 12px rgba(102,126,234,0.4);
+}
+.tab-panel { display: none; flex-direction: column; gap: 14px; }
+.tab-panel.active { display: flex; }
+
+/* ===== AURA COLOR PICKER ===== */
+.aura-row {
+    display: flex; align-items: center; gap: 10px;
+    flex-wrap: wrap;
+}
+.aura-label { font-size: 0.8rem; color: rgba(255,255,255,0.6); white-space: nowrap; }
+.aura-dots { display: flex; gap: 8px; flex-wrap: wrap; }
+.aura-dot {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid transparent; cursor: pointer;
+    transition: all .15s; outline: none;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+.aura-dot:hover { transform: scale(1.15); }
+.aura-dot.selected {
+    border-color: #fff;
+    transform: scale(1.2);
+    box-shadow: 0 0 10px currentColor, 0 2px 8px rgba(0,0,0,0.5);
+}
+
+/* ===== PARAMS TAB ===== */
+.params-section { display: flex; flex-direction: column; }
+.params-section .setting-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    gap: 10px;
+}
+.params-section .setting-row:last-child { border-bottom: none; }
+
+/* ===== ACHIEVEMENTS TAB ===== */
+.ach-record-card {
+    background: linear-gradient(135deg, rgba(102,126,234,0.15), rgba(240,147,251,0.15));
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px; padding: 16px;
+}
+.ach-record-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.ach-stat-box { text-align: center; }
+.ach-stat-icon { font-size: 1.4rem; }
+.ach-stat-val { font-size: 1.2rem; font-weight: 900; color: #ffd700; margin: 2px 0; }
+.ach-stat-lbl { font-size: 0.65rem; color: rgba(255,255,255,0.5); }
+
+.ach-cum-section { background: rgba(255,255,255,0.04); border-radius: 14px; padding: 14px; }
+.ach-section-title {
+    font-size: 0.88rem; font-weight: 700; color: rgba(255,255,255,0.7);
+    margin-bottom: 10px;
+}
+.ach-cum-grid { display: flex; flex-direction: column; gap: 8px; }
+.ach-cum-item {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 10px; padding: 8px 12px;
+}
+.ach-cum-icon { font-size: 1rem; }
+.ach-cum-lbl { flex: 1; font-size: 0.82rem; color: rgba(255,255,255,0.6); }
+.ach-cum-val { font-size: 0.95rem; font-weight: 700; color: #ffd700; }
+
+.ach-badges-section { background: rgba(255,255,255,0.04); border-radius: 14px; padding: 14px; }
+.ach-badge-count {
+    font-size: 0.75rem; color: rgba(255,255,255,0.4);
+    margin-left: 6px; font-weight: 400;
+}
+.ach-badge-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 8px; margin-top: 4px;
+}
+.ach-badge {
+    border-radius: 12px; padding: 10px 6px;
+    text-align: center; transition: transform .15s;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    border: 1px solid transparent;
+}
+.ach-badge-icon { font-size: 1.6rem; }
+.ach-badge-name { font-size: 0.65rem; font-weight: 700; line-height: 1.2; }
+.ach-badge-locked {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.06);
+    opacity: 0.45; filter: grayscale(1);
+}
+.ach-badge-unlocked {
+    background: linear-gradient(135deg, rgba(102,126,234,0.2), rgba(255,215,0,0.15));
+    border-color: rgba(255,215,0,0.3);
+    box-shadow: 0 2px 10px rgba(255,215,0,0.1);
+}
+.ach-badge-unlocked:hover { transform: scale(1.05); }

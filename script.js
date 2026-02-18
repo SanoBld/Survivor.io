@@ -282,6 +282,7 @@ let roomPin = '';
 let networkPing = 0;
 let spectatorMode = false;
 let perfMode = false;
+let playerAuraColor = '#667eea'; // Chosen aura color (persisted)
 
 // ===== PLAYER FACTORY =====
 function mkPlayer() {
@@ -380,6 +381,36 @@ function loadSaved() {
     refreshTrophyUI();
     perfMode = localStorage.getItem('sio_perf') === '1';
     applyPerfMode();
+
+    // === PROFILE PERSISTENCE: restore name, emoji, aura color ===
+    const savedName = localStorage.getItem('sio_name');
+    if (savedName) {
+        document.getElementById('playerName').value = savedName;
+        player.name = savedName;
+    }
+    const savedEmoji = localStorage.getItem('sio_emoji');
+    if (savedEmoji) {
+        document.querySelectorAll('.emoji-btn').forEach(b => {
+            b.classList.remove('selected');
+            if (b.dataset.emoji === savedEmoji) b.classList.add('selected');
+        });
+        player.emoji = savedEmoji;
+    }
+    const savedAura = localStorage.getItem('sio_aura');
+    if (savedAura) {
+        playerAuraColor = savedAura;
+        document.querySelectorAll('.aura-dot').forEach(b => {
+            b.classList.remove('selected');
+            if (b.dataset.color === savedAura) b.classList.add('selected');
+        });
+    }
+    refreshAchievementsTab();
+}
+
+function saveProfile() {
+    localStorage.setItem('sio_name', player.name);
+    localStorage.setItem('sio_emoji', player.emoji);
+    localStorage.setItem('sio_aura', playerAuraColor);
 }
 
 function saveTrophies() {
@@ -405,6 +436,57 @@ function refreshTrophyUI() {
     });
 }
 
+function refreshAchievementsTab() {
+    // Record stats
+    const hs = parseInt(localStorage.getItem('sio_hs') || '0');
+    const bw = parseInt(localStorage.getItem('sio_bestWave') || '0');
+    const bt = parseInt(localStorage.getItem('sio_bestTime') || '0');
+    const bm = Math.floor(bt / 60000), bs = Math.floor((bt % 60000) / 1000);
+
+    const el = id => document.getElementById(id);
+    if (el('achHighScore')) el('achHighScore').textContent = hs.toLocaleString();
+    if (el('achBestWave')) el('achBestWave').textContent = bw;
+    if (el('achBestTime')) el('achBestTime').textContent = bt > 0 ? `${bm}:${bs.toString().padStart(2,'0')}` : '0:00';
+
+    // Cumulative stats
+    const cumK  = parseInt(localStorage.getItem('sio_cumKills')  || '0');
+    const cumD  = parseInt(localStorage.getItem('sio_cumDeaths') || '0');
+    const cumXP = parseInt(localStorage.getItem('sio_cumXP')     || '0');
+    const cumG  = parseInt(localStorage.getItem('sio_cumGames')  || '0');
+    if (el('achTotalKills'))  el('achTotalKills').textContent  = cumK.toLocaleString();
+    if (el('achTotalDeaths')) el('achTotalDeaths').textContent = cumD.toLocaleString();
+    if (el('achTotalXP'))     el('achTotalXP').textContent     = cumXP.toLocaleString();
+    if (el('achTotalGames'))  el('achTotalGames').textContent  = cumG.toLocaleString();
+
+    // Trophy badge grid
+    const grid = el('achBadgeGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    const unlocked = TROPHIES.filter(t => t.unlocked).length;
+    if (el('achBadgeCount')) el('achBadgeCount').textContent = `${unlocked}/${TROPHIES.length}`;
+
+    TROPHIES.forEach(t => {
+        const div = document.createElement('div');
+        div.className = 'ach-badge' + (t.unlocked ? ' ach-badge-unlocked' : ' ach-badge-locked');
+        div.innerHTML = `<span class="ach-badge-icon">${t.icon}</span><span class="ach-badge-name">${t.name}</span>`;
+        div.title = t.unlocked ? '✅ ' + t.name : '🔒 Non débloqué';
+        grid.appendChild(div);
+    });
+}
+
+function refreshTabSettings() {
+    const el = id => document.getElementById(id);
+    const btn = el('togglePerfModeTab');
+    if (btn) {
+        if (perfMode) { btn.textContent = 'ON'; btn.classList.add('on'); btn.classList.remove('off'); }
+        else { btn.textContent = 'OFF'; btn.classList.remove('on'); btn.classList.add('off'); }
+    }
+    if (el('tabSettingsFPS')) el('tabSettingsFPS').textContent = currentFPS;
+    if (el('tabSettingsEnemies')) el('tabSettingsEnemies').textContent = enemies.length;
+    let ap = 0; for (let i = 0; i < PP_SIZE; i++) { if (particlePool[i].active) ap++; }
+    if (el('tabSettingsParticles')) el('tabSettingsParticles').textContent = `${ap}/${PP_SIZE}`;
+}
+
 // ===================================================================
 //  MENU & SETTINGS SETUP
 // ===================================================================
@@ -423,14 +505,58 @@ function setupMenu() {
         const v = document.getElementById('pinInput').value;
         if (v && v.toString().length === 6) joinGame(v.toString());
     };
+    document.getElementById('playerName').oninput = e => {
+        player.name = e.target.value.trim() || 'Joueur';
+        saveProfile();
+    };
+
+    // === EMOJI SAVE on change ===
     document.querySelectorAll('.emoji-btn').forEach(b => {
+        const orig = b.onclick;
         b.onclick = () => {
             document.querySelectorAll('.emoji-btn').forEach(x => x.classList.remove('selected'));
             b.classList.add('selected');
             player.emoji = b.dataset.emoji;
+            saveProfile();
         };
     });
-    document.getElementById('playerName').oninput = e => { player.name = e.target.value.trim() || 'Joueur'; };
+
+    // === AURA COLOR PICKER ===
+    document.querySelectorAll('.aura-dot').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('.aura-dot').forEach(x => x.classList.remove('selected'));
+            btn.classList.add('selected');
+            playerAuraColor = btn.dataset.color;
+            saveProfile();
+        };
+    });
+
+    // === TAB SWITCHING ===
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            btn.classList.add('active');
+            const tabId = 'tab-' + btn.dataset.tab;
+            const panel = document.getElementById(tabId);
+            if (panel) panel.classList.add('active');
+            if (btn.dataset.tab === 'succes') refreshAchievementsTab();
+            if (btn.dataset.tab === 'params') refreshTabSettings();
+        };
+    });
+
+    // === PARAMS TAB: perf toggle mirror ===
+    const perfTabBtn = document.getElementById('togglePerfModeTab');
+    if (perfTabBtn) {
+        perfTabBtn.onclick = () => {
+            perfMode = !perfMode;
+            localStorage.setItem('sio_perf', perfMode ? '1' : '0');
+            applyPerfMode();
+            perfSuggestShown = false;
+            updateSettingsDisplay();
+            refreshTabSettings();
+        };
+    }
 }
 
 function setupSettings() {
@@ -440,7 +566,8 @@ function setupSettings() {
         document.getElementById('btnQuitGame').classList.toggle('hidden', !inGame);
         updateSettingsDisplay();
     };
-    document.getElementById('btnSettingsMenu').onclick = openSettings;
+    const settingsMenuBtn = document.getElementById('btnSettingsMenu');
+    if (settingsMenuBtn) settingsMenuBtn.onclick = openSettings;
     document.getElementById('btnSettingsHUD').onclick = openSettings;
     document.getElementById('btnCloseSettings').onclick = () => {
         document.getElementById('settingsPanel').classList.add('hidden');
@@ -524,15 +651,19 @@ function cancelHost() {
     isHost = false; gameMode = 'solo';
 }
 function hideAllMenuSections() {
-    document.getElementById('customizationBlock').style.display = 'none';
-    document.getElementById('mainButtons').style.display = 'none';
+    const cb = document.getElementById('customizationBlock');
+    const mb = document.getElementById('mainButtons');
+    if (cb) cb.style.display = 'none';
+    if (mb) mb.style.display = 'none';
     document.getElementById('joinSection').classList.add('hidden');
     document.getElementById('hostSection').classList.add('hidden');
     document.getElementById('waitSection').classList.add('hidden');
 }
 function showMainMenuControls() {
-    document.getElementById('customizationBlock').style.display = '';
-    document.getElementById('mainButtons').style.display = '';
+    const cb = document.getElementById('customizationBlock');
+    const mb = document.getElementById('mainButtons');
+    if (cb) cb.style.display = '';
+    if (mb) mb.style.display = '';
 }
 function copyPin() {
     navigator.clipboard.writeText(roomPin).then(() => showToast('📋 PIN copié !'));
@@ -846,6 +977,9 @@ function initGame() {
     player = mkPlayer();
     player.name = document.getElementById('playerName').value.trim() || 'Joueur';
     player.emoji = document.querySelector('.emoji-btn.selected')?.dataset.emoji || '😎';
+    // Restore saved aura color
+    const savedAuraInit = localStorage.getItem('sio_aura');
+    if (savedAuraInit) playerAuraColor = savedAuraInit;
     player.alive = true;
     spectatorMode = false;
 
@@ -1427,6 +1561,8 @@ function updateEnemies(dt) {
         e.x = Math.max(0, Math.min(CFG.WORLD, e.x));
         e.y = Math.max(0, Math.min(CFG.WORLD, e.y));
         e.angle2 = (e.angle2 || 0) + 0.05;
+        // Decay impact flash
+        if (e.flashTimer > 0) e.flashTimer -= dt / 1000;
 
         // Toxic cloud
         if (e.toxic && dist < 120 && player.alive && !spectatorMode) {
@@ -1509,8 +1645,10 @@ function checkPlayerEnemyCollisions() {
                 const bootsMult = 1 + 0.1 * player.bonuses.boots;
                 player.health -= en.damage * 0.5 * bootsMult;
                 player._lastHit = now;
-                shakeCamera(6);
-                spawnParticle(player.x, player.y, '#ff4444', 3);
+                // === SCREEN SHAKE on player damage ===
+                shakeCamera(10);
+                // Spawn more intense hit particles
+                for (let _hp = 0; _hp < 6; _hp++) spawnParticle(player.x, player.y, '#ff4444', 3 + Math.random() * 3);
             }
         }
         // Spider slow web
@@ -1551,6 +1689,8 @@ function damageEnemy(en, dmg, attackerId) {
     en.health -= dmg;
     if (attackerId === 'me' || attackerId === myPeerId) stats.totalDamage += dmg;
     if (onScreen(en.x, en.y, en.size + 30)) spawnDmgNum(en.x, en.y - en.size, Math.round(dmg));
+    // === IMPACT FLASH: enemy flashes white when hit ===
+    en.flashTimer = 0.3;
     shakeCamera(1);
     if (en.health <= 0) killEnemy(en, attackerId);
 }
@@ -1567,8 +1707,13 @@ function killEnemy(en, killerId) {
     }
     spawnGem(en.x, en.y, en.xpValue);
     // === ZERO SYNC VISUELLE: Particles generated locally, never sent over network ===
-    if (onScreen(en.x, en.y, en.size + 20))
-        for (let i = 0; i < 8; i++) spawnParticle(en.x, en.y, en.color, 3 + Math.random() * 4);
+    if (onScreen(en.x, en.y, en.size + 20)) {
+        // === COLORED PARTICLES using enemy's specific color ===
+        const pCount = (en.type === 'alien' || en.type === 'minotaur') ? 20 : 10;
+        for (let i = 0; i < pCount; i++) spawnParticle(en.x, en.y, en.color, 3 + Math.random() * 5);
+        // Boss death: big screen shake
+        if (en.type === 'alien' || en.type === 'minotaur') shakeCamera(14);
+    }
     const idx = enemies.indexOf(en);
     if (idx !== -1) swapPop(enemies, idx);
 }
@@ -1656,6 +1801,9 @@ function doRespawn() {
     player = mkPlayer();
     player.name = document.getElementById('playerName').value.trim() || 'Joueur';
     player.emoji = document.querySelector('.emoji-btn.selected')?.dataset.emoji || '😎';
+    // Restore saved aura color
+    const savedAuraInit = localStorage.getItem('sio_aura');
+    if (savedAuraInit) playerAuraColor = savedAuraInit;
     player.alive = true;
     spectatorMode = false;
     player.x = CFG.WORLD / 2 + (Math.random() - 0.5) * 200;
@@ -1958,6 +2106,18 @@ function drawEnemiesBatched() {
         ctx.fillStyle = hPct > 0.6 ? '#2ecc71' : hPct > 0.3 ? '#ffa500' : '#f5576c';
         ctx.fillRect(en.x - bw / 2, en.y - en.size - 12, bw * hPct, bh);
     }
+
+    // === IMPACT FLASH: white overlay when hit ===
+    for (const en of visible) {
+        if (!en.flashTimer || en.flashTimer <= 0) continue;
+        const alpha = Math.min(0.85, en.flashTimer / 0.3);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(en.x, en.y, en.size + 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+    }
 }
 
 function drawProjectiles() {
@@ -2038,12 +2198,29 @@ function drawPlayerSprite(p, isLocal) {
     const alive = p.alive !== false;
     if (!alive) ctx.globalAlpha = 0.3;
 
+    // === DYNAMIC PULSING AURA (playerAuraColor) ===
+    if (isLocal && !perfMode) {
+        const t = Date.now();
+        const pulse = 0.12 + Math.sin(t * 0.0035) * 0.05;
+        const baseR = 38;
+        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, baseR);
+        // Convert hex to rgba helper
+        const hexToRgba = (hex, a) => {
+            const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+            return `rgba(${r},${g},${b},${a})`;
+        };
+        grad.addColorStop(0, hexToRgba(playerAuraColor, pulse * 2));
+        grad.addColorStop(1, hexToRgba(playerAuraColor, 0));
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(p.x, p.y, baseR, 0, Math.PI * 2); ctx.fill();
+    }
+    // Bonus fire aura
     if (isLocal && player.bonuses.aura > 0 && !perfMode) {
         const aurR = 80 + player.bonuses.aura * 10;
-        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, aurR);
-        grad.addColorStop(0, 'rgba(255,100,0,0.2)');
-        grad.addColorStop(1, 'rgba(255,50,0,0)');
-        ctx.fillStyle = grad;
+        const grad2 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, aurR);
+        grad2.addColorStop(0, 'rgba(255,100,0,0.2)');
+        grad2.addColorStop(1, 'rgba(255,50,0,0)');
+        ctx.fillStyle = grad2;
         ctx.beginPath(); ctx.arc(p.x, p.y, aurR, 0, Math.PI * 2); ctx.fill();
     }
 
@@ -2053,8 +2230,8 @@ function drawPlayerSprite(p, isLocal) {
     const sz = (p.size || 24) * 2;
     ctx.font = `${sz}px serif`;
     if (!perfMode) {
-        ctx.shadowBlur = isLocal ? 16 : 8;
-        ctx.shadowColor = isLocal ? '#667eea' : '#2ecc71';
+        ctx.shadowBlur = isLocal ? 18 : 8;
+        ctx.shadowColor = isLocal ? playerAuraColor : '#2ecc71';
     }
     ctx.fillText(p.emoji || p.e || '😎', p.x, p.y);
     if (!perfMode) ctx.shadowBlur = 0;
@@ -2128,9 +2305,23 @@ function drawDmgPool() {
 // ===================================================================
 function endGame() {
     GS = 'gameover';
-    const cumK = parseInt(localStorage.getItem('sio_cumKills') || '0') + player.kills;
-    localStorage.setItem('sio_cumKills', cumK);
+    // === CUMULATIVE STATS ===
+    const cumK = parseInt(localStorage.getItem('sio_cumKills')  || '0') + player.kills;
+    const cumD = parseInt(localStorage.getItem('sio_cumDeaths') || '0') + 1;
+    const cumXP = parseInt(localStorage.getItem('sio_cumXP')    || '0') + player.xp;
+    const cumG = parseInt(localStorage.getItem('sio_cumGames')  || '0') + 1;
+    localStorage.setItem('sio_cumKills',  cumK);
+    localStorage.setItem('sio_cumDeaths', cumD);
+    localStorage.setItem('sio_cumXP',     cumXP);
+    localStorage.setItem('sio_cumGames',  cumG);
     if (cumK >= 1000) { const t = TROPHIES.find(t => t.id === 'butcher_1000'); if (t && !t.unlocked) { t.unlocked = true; saveTrophies(); } }
+
+    // === BEST WAVE & BEST TIME ===
+    const prevBW = parseInt(localStorage.getItem('sio_bestWave') || '0');
+    if (currentWave > prevBW) localStorage.setItem('sio_bestWave', currentWave);
+    const prevBT = parseInt(localStorage.getItem('sio_bestTime') || '0');
+    if (stats.survivalTime > prevBT) localStorage.setItem('sio_bestTime', stats.survivalTime);
+
     const isNew = saveHighScore(player.score);
 
     document.getElementById('gameUI').classList.add('hidden');
