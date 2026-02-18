@@ -1,6 +1,6 @@
 // ============================================================
-//  SURVIVOR.IO BETA — Full Refactor
-//  Optimizations:
+//  SURVIVOR.IO BETA — v2 Enhanced
+//  Core Optimizations:
 //    • Object Pools (particles ×600, dmgNums ×100) — zero GC
 //    • Obstacle Spatial Grid (static, built once)
 //    • Enemy Spatial Grid (dynamic, rebuilt each frame) — O(1) proj-enemy collisions
@@ -10,6 +10,15 @@
 //    • Swap-and-pop deletion — no splice in hot paths
 //    • Performance Mode — toggle shadows + emoji→circle fallback
 //    • FPS Monitor — rolling 60-frame average, auto-suggest perf
+//  v2 NEW:
+//    • Smart Steering AI — raycast wall-avoidance + stuck detection
+//    • Wave creature system — minWave + weight per ET type, Zero GC pool
+//    • 7 creature types: Zombie·Fungus·Spider·Alien·Minotaur·Ghost·Dragon
+//    • Dragon 🐉 (wave 10): flies (ghost), fire-breath spread, charge dash,
+//      terror aura, massive HP — true end-game boss
+//    • Animations v2 — direction-aware lean rotation + squash/stretch
+//    • moveAngle tracking on each enemy (zero alloc, atan2 gated by threshold)
+//    • Wave unlock toast notification when a new creature type appears
 //  Network:
 //    • Zero sync of particles/popups — local generation only
 //    • STRUCTURE_SEED sent with 'gs' for deterministic worlds
@@ -47,18 +56,31 @@ const CFG = {
 let STRUCTURE_SEED = 42;
 
 // ===== ENEMY TYPES =====
+// minWave : first wave at which this type can spawn
+// weight  : relative spawn probability once unlocked (higher = more common)
 const ET = {
-    zombie:   { emoji:'🧟', hp:30,  spd:1.4, dmg:16, sz:16, xp:15, sc:10,  col:'#95e1d3', ghost:false, shooter:false, charger:false, toxic:false, spider:false },
-    ghost:    { emoji:'👻', hp:15,  spd:3.4, dmg:12, sz:13, xp:12, sc:15,  col:'#c9b8f5', ghost:true,  shooter:false, charger:false, toxic:false, spider:false },
-    alien:    { emoji:'👾', hp:120, spd:1.0, dmg:45, sz:26, xp:50, sc:50,  col:'#f093fb', ghost:false, shooter:true,  charger:false, toxic:false, spider:false },
-    minotaur: { emoji:'🐂', hp:200, spd:2.4, dmg:65, sz:30, xp:80, sc:80,  col:'#ff7043', ghost:false, shooter:false, charger:true,  toxic:false, spider:false },
-    fungus:   { emoji:'🍄', hp:60,  spd:0.9, dmg:10, sz:20, xp:30, sc:25,  col:'#a5d6a7', ghost:false, shooter:false, charger:false, toxic:true,  spider:false },
-    spider:   { emoji:'🕷️', hp:45,  spd:3.0, dmg:22, sz:18, xp:25, sc:20,  col:'#bcaaa4', ghost:false, shooter:false, charger:false, toxic:false, spider:true  },
+    // ── Vague 1 — starter horde ─────────────────────────────────────────────────────────────────
+    zombie:   { emoji:'🧟', hp:30,  spd:1.4, dmg:16,  sz:16, xp:15,  sc:10,  col:'#95e1d3', ghost:false, shooter:false, charger:false, toxic:false, spider:false, dragon:false, minWave:1,  weight:8 },
+    // ── Vague 2 — zone de poison ─────────────────────────────────────────────────────────────────
+    fungus:   { emoji:'🍄', hp:60,  spd:0.9, dmg:10,  sz:20, xp:30,  sc:25,  col:'#a5d6a7', ghost:false, shooter:false, charger:false, toxic:true,  spider:false, dragon:false, minWave:2,  weight:5 },
+    // ── Vague 3 — araignée rapide ────────────────────────────────────────────────────────────────
+    spider:   { emoji:'🕷️', hp:45,  spd:3.0, dmg:22,  sz:18, xp:25,  sc:20,  col:'#bcaaa4', ghost:false, shooter:false, charger:false, toxic:false, spider:true,  dragon:false, minWave:3,  weight:5 },
+    // ── Vague 4 — tireur à distance ─────────────────────────────────────────────────────────────
+    alien:    { emoji:'👾', hp:120, spd:1.0, dmg:45,  sz:26, xp:50,  sc:50,  col:'#f093fb', ghost:false, shooter:true,  charger:false, toxic:false, spider:false, dragon:false, minWave:4,  weight:3 },
+    // ── Vague 5 — chargeur brutale ───────────────────────────────────────────────────────────────
+    minotaur: { emoji:'🐂', hp:200, spd:2.4, dmg:65,  sz:30, xp:80,  sc:80,  col:'#ff7043', ghost:false, shooter:false, charger:true,  toxic:false, spider:false, dragon:false, minWave:5,  weight:2 },
+    // ── Vague 7 — fantôme intangible ────────────────────────────────────────────────────────────
+    ghost:    { emoji:'👻', hp:15,  spd:3.4, dmg:12,  sz:13, xp:12,  sc:15,  col:'#c9b8f5', ghost:true,  shooter:false, charger:false, toxic:false, spider:false, dragon:false, minWave:7,  weight:3 },
+    // ── Vague 10 — DRAGON BOSS (vole + charge + souffle de feu) ─────────────────────────────────
+    dragon:   { emoji:'🐉', hp:500, spd:2.0, dmg:90,  sz:34, xp:200, sc:200, col:'#ff1744', ghost:true,  shooter:true,  charger:true,  toxic:false, spider:false, dragon:true,  minWave:10, weight:1 },
 };
 
 // Pre-cache emoji font strings per type
 const ET_FONT = {};
 Object.keys(ET).forEach(k => { ET_FONT[k] = `${ET[k].sz * 2}px serif`; });
+
+// Pre-allocated spawn pool — reused every spawn call, zero GC
+const _spawnPool = [];
 
 // ===== BONUS DEFS =====
 const BONUS_DEFS = [
@@ -282,8 +304,10 @@ let roomPin = '';
 let networkPing = 0;
 let spectatorMode = false;
 let perfMode = false;
-let showDmgNums  = true;   // Toggle: show/hide damage numbers
-let showBonusPills = true; // Toggle: show/hide active bonus pills
+let showDmgNums     = true;   // Toggle: show/hide damage numbers
+let showBonusPills  = true;   // Toggle: show/hide active bonus pills
+let showAnimations  = true;   // Toggle: squash/stretch + rotation walk anim
+let showDeathParticles = true; // Toggle: death debris particles
 let playerAuraColor = '#667eea'; // Chosen aura color (persisted)
 
 // ===== PLAYER FACTORY =====
@@ -383,8 +407,10 @@ function loadSaved() {
     refreshTrophyUI();
     perfMode = localStorage.getItem('sio_perf') === '1';
     applyPerfMode();
-    showDmgNums   = localStorage.getItem('sio_showDmg')   !== '0';
-    showBonusPills = localStorage.getItem('sio_showBonus') !== '0';
+    showDmgNums        = localStorage.getItem('sio_showDmg')        !== '0';
+    showBonusPills     = localStorage.getItem('sio_showBonus')       !== '0';
+    showAnimations     = localStorage.getItem('sio_showAnim')        !== '0';
+    showDeathParticles = localStorage.getItem('sio_showDeathPart')   !== '0';
     applyDisplayToggles();
 
     // === PROFILE PERSISTENCE: restore name, emoji, aura color ===
@@ -487,9 +513,11 @@ function refreshTabSettings() {
         btn.textContent = state ? 'ON' : 'OFF';
         btn.className = 'toggle-btn ' + (state ? 'on' : 'off');
     };
-    syncBtn('togglePerfModeTab', perfMode);
-    syncBtn('toggleShowDmg',     showDmgNums);
-    syncBtn('toggleShowBonus',   showBonusPills);
+    syncBtn('togglePerfModeTab',    perfMode);
+    syncBtn('toggleShowDmg',        showDmgNums);
+    syncBtn('toggleShowBonus',      showBonusPills);
+    syncBtn('toggleShowAnim',       showAnimations);
+    syncBtn('toggleShowDeathPart',  showDeathParticles);
     if (el('tabSettingsFPS')) el('tabSettingsFPS').textContent = currentFPS;
     if (el('tabSettingsEnemies')) el('tabSettingsEnemies').textContent = enemies.length;
     let ap = 0; for (let i = 0; i < PP_SIZE; i++) { if (particlePool[i].active) ap++; }
@@ -592,6 +620,26 @@ function setupMenu() {
         };
     }
 
+    // === PARAMS TAB: animations toggle ===
+    const animTabBtn = document.getElementById('toggleShowAnim');
+    if (animTabBtn) {
+        animTabBtn.onclick = () => {
+            showAnimations = !showAnimations;
+            localStorage.setItem('sio_showAnim', showAnimations ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
+
+    // === PARAMS TAB: death particles toggle ===
+    const deathPartTabBtn = document.getElementById('toggleShowDeathPart');
+    if (deathPartTabBtn) {
+        deathPartTabBtn.onclick = () => {
+            showDeathParticles = !showDeathParticles;
+            localStorage.setItem('sio_showDeathPart', showDeathParticles ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
+
     // === PARAMS TAB: Quit button ===
     const quitTabBtn = document.getElementById('btnQuitTab');
     if (quitTabBtn) {
@@ -659,6 +707,26 @@ function setupSettings() {
             applyDisplayToggles();
         };
     }
+
+    // In-game settings: animations toggle
+    const animHUDBtn = document.getElementById('toggleShowAnimHUD');
+    if (animHUDBtn) {
+        animHUDBtn.onclick = () => {
+            showAnimations = !showAnimations;
+            localStorage.setItem('sio_showAnim', showAnimations ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
+
+    // In-game settings: death particles toggle
+    const deathPartHUDBtn = document.getElementById('toggleShowDeathPartHUD');
+    if (deathPartHUDBtn) {
+        deathPartHUDBtn.onclick = () => {
+            showDeathParticles = !showDeathParticles;
+            localStorage.setItem('sio_showDeathPart', showDeathParticles ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
     document.getElementById('btnQuitGame').onclick = () => {
         document.getElementById('settingsPanel').classList.add('hidden');
         // Clean PeerJS disconnect then return to menu
@@ -698,10 +766,14 @@ function applyDisplayToggles() {
         btn.textContent = state ? 'ON' : 'OFF';
         btn.className = 'toggle-btn ' + (state ? 'on' : 'off');
     };
-    syncBtn('toggleShowDmg',    showDmgNums);
-    syncBtn('toggleShowDmgHUD', showDmgNums);
-    syncBtn('toggleShowBonus',    showBonusPills);
-    syncBtn('toggleShowBonusHUD', showBonusPills);
+    syncBtn('toggleShowDmg',         showDmgNums);
+    syncBtn('toggleShowDmgHUD',      showDmgNums);
+    syncBtn('toggleShowBonus',       showBonusPills);
+    syncBtn('toggleShowBonusHUD',    showBonusPills);
+    syncBtn('toggleShowAnim',        showAnimations);
+    syncBtn('toggleShowAnimHUD',     showAnimations);
+    syncBtn('toggleShowDeathPart',   showDeathParticles);
+    syncBtn('toggleShowDeathPartHUD',showDeathParticles);
     // Show/hide the bonus pills zone
     const ab = document.getElementById('activeBonus');
     if (ab) ab.style.display = showBonusPills ? '' : 'none';
@@ -1347,6 +1419,15 @@ function update(dt) {
         currentWave++;
         stats.wave = currentWave;
         document.getElementById('waveDisplay').textContent = 'VAGUE ' + currentWave;
+
+        // === WAVE CREATURE UNLOCK ANNOUNCE ===
+        for (const k in ET) {
+            if (ET[k].minWave === currentWave) {
+                showToast(`🚨 Vague ${currentWave} : ${ET[k].emoji} ${k.charAt(0).toUpperCase() + k.slice(1)} débarque !`);
+                break; // Show one toast per wave
+            }
+        }
+
         if (isHost) connections.forEach(c => { if (c.open) c.send({ t: 'wave', w: currentWave }); });
         tryRespawn();
     }
@@ -1629,11 +1710,23 @@ function spawnEnemies() {
     if (enemies.length >= maxEnemies) return;
     lastSpawnTime = Date.now();
 
-    const typeList = ['zombie', 'zombie', 'zombie', 'ghost', 'ghost', 'alien', 'spider', 'fungus'];
-    if (currentWave >= 3) typeList.push('minotaur');
-    if (currentWave >= 5) typeList.push('minotaur', 'alien');
+    // ── Build wave-filtered weighted pool (Zero GC: reuse _spawnPool array) ──────────────
+    _spawnPool.length = 0;
+    let totalWeight = 0;
+    for (const k in ET) {
+        if (currentWave >= ET[k].minWave) {
+            _spawnPool.push(k);
+            totalWeight += ET[k].weight;
+        }
+    }
+    // Weighted random pick without any object allocation
+    let rnd = Math.random() * totalWeight;
+    let type = _spawnPool[0]; // safe fallback: zombie always present
+    for (let pi = 0; pi < _spawnPool.length; pi++) {
+        rnd -= ET[_spawnPool[pi]].weight;
+        if (rnd <= 0) { type = _spawnPool[pi]; break; }
+    }
 
-    const type = typeList[Math.floor(Math.random() * typeList.length)];
     const td = ET[type];
     const ang = Math.random() * Math.PI * 2;
     const dist = 600 + Math.random() * 200;
@@ -1650,8 +1743,10 @@ function spawnEnemies() {
         health: hp, maxHealth: hp,
         type, emoji: td.emoji, speed: td.spd * spdScale,
         damage: td.dmg, size: td.sz, color: td.color, xpValue: td.xp, scoreValue: td.sc,
-        ghost: td.ghost, shooter: td.shooter, charger: td.charger, toxic: td.toxic, spider: td.spider,
-        angle2: 0, charging: false, chargeDir: 0, chargeTimer: 0, lastShot: 0, slowTimer: 0,
+        ghost: td.ghost, shooter: td.shooter, charger: td.charger, toxic: td.toxic,
+        spider: td.spider, dragon: td.dragon,
+        angle2: 0, moveAngle: 0,
+        charging: false, chargeDir: 0, chargeTimer: 0, lastShot: 0, slowTimer: 0,
     });
 }
 
@@ -1692,8 +1787,69 @@ function updateEnemies(dt) {
         let spd = e.speed;
         if (e.slowTimer > 0) { spd *= 0.4; e.slowTimer -= dt; }
 
-        if (e.charger) {
-            // === STICK: reduced stop distance ===
+        // ── Capture pre-movement position to compute moveAngle (Zero GC) ──────────────────
+        const prevX = e.x, prevY = e.y;
+
+        // ============================================================
+        //  RAYCAST WALL DETECTION
+        //  Cast a ray forward (in move direction). If it hits an obs,
+        //  calculate a lateral steer force to slide around it.
+        // ============================================================
+        let wallForceX = 0, wallForceY = 0;
+        if (!e.ghost) {
+            const rayLen = e.size * 2.5 + 20;
+            const ndx = dx / dist, ndy = dy / dist;
+            const rayX = e.x + ndx * rayLen;
+            const rayY = e.y + ndy * rayLen;
+            queryNearbyObs(rayX, rayY);
+            for (let oi = 0; oi < _obsQueryLen; oi++) {
+                const obs = _obsQueryBuf[oi];
+                if (obs.type === 'arena' || obs.type === 'gas') continue;
+                const ol = obs.x - obs.w / 2, or_ = obs.x + obs.w / 2;
+                const ot = obs.y - obs.h / 2, ob_ = obs.y + obs.h / 2;
+                if (rayX > ol && rayX < or_ && rayY > ot && rayY < ob_) {
+                    // Wall ahead! Compute perpendicular lateral force.
+                    // Pick and remember a side-preference to avoid oscillation.
+                    if (e._lateralSign === undefined) e._lateralSign = (Math.random() < 0.5) ? 1 : -1;
+                    // Perpendicular to movement direction (rotated 90°)
+                    wallForceX = -ndy * e._lateralSign;
+                    wallForceY =  ndx * e._lateralSign;
+                    break;
+                }
+            }
+        }
+
+        // ============================================================
+        //  MOVEMENT — with per-type Smart Steering
+        // ============================================================
+        if (e.dragon) {
+            // ── DRAGON: vole (ghost=true, ignore murs) + charge + souffle de feu ────────
+            // Move aggressively toward player at full speed
+            e.x += (dx / dist) * spd;
+            e.y += (dy / dist) * spd;
+            // Charge dash when close
+            if (!e.charging && dist < 400) {
+                e.charging = true; e.chargeDir = Math.atan2(dy, dx); e.chargeTimer = 500;
+            }
+            if (e.charging) {
+                e.x += Math.cos(e.chargeDir) * spd * 4.0;
+                e.y += Math.sin(e.chargeDir) * spd * 4.0;
+                e.chargeTimer -= dt;
+                if (e.chargeTimer <= 0) e.charging = false;
+            }
+            // Fire breath: spread of 3 projectiles every 1.2s
+            if (now - e.lastShot > 1200 && dist < 480) {
+                const baseAng = Math.atan2(dy, dx);
+                spawnProj(e.x, e.y, baseAng,        e.damage,       7, 0, e.id);
+                spawnProj(e.x, e.y, baseAng + 0.22, e.damage * 0.6, 5, 0, e.id);
+                spawnProj(e.x, e.y, baseAng - 0.22, e.damage * 0.6, 5, 0, e.id);
+                e.lastShot = now;
+                if (onScreen(e.x, e.y, 60) && showDeathParticles) {
+                    for (let fp = 0; fp < 4; fp++)
+                        spawnParticle(e.x + Math.cos(baseAng) * 20, e.y + Math.sin(baseAng) * 20, '#ff4400', 4 + Math.random() * 3, 0.4);
+                }
+            }
+        } else if (e.charger) {
             if (!e.charging && dist < 500) {
                 e.charging = true; e.chargeDir = Math.atan2(dy, dx); e.chargeTimer = 700;
             }
@@ -1703,26 +1859,62 @@ function updateEnemies(dt) {
                 e.chargeTimer -= dt;
                 if (e.chargeTimer <= 0) e.charging = false;
             } else {
-                e.x += (dx / dist) * spd * 0.6;
-                e.y += (dy / dist) * spd * 0.6;
+                e.x += (dx / dist) * spd * 0.6 + wallForceX * spd;
+                e.y += (dy / dist) * spd * 0.6 + wallForceY * spd;
             }
         } else if (e.shooter) {
-            // === STICK: shooter stops at 180px (was 250), gets aggressive closer ===
-            if (dist > 180) { e.x += (dx / dist) * spd; e.y += (dy / dist) * spd; }
-            else { e.x -= (dx / dist) * spd * 0.15; e.y -= (dy / dist) * spd * 0.15; }
+            if (dist > 180) {
+                e.x += (dx / dist) * spd + wallForceX * spd;
+                e.y += (dy / dist) * spd + wallForceY * spd;
+            } else {
+                e.x -= (dx / dist) * spd * 0.15 + wallForceX * spd * 0.15;
+                e.y -= (dy / dist) * spd * 0.15 + wallForceY * spd * 0.15;
+            }
             if (now - e.lastShot > 1800 && dist < 320) {
                 spawnProj(e.x, e.y, Math.atan2(dy, dx), e.damage, 6, 0, e.id);
                 e.lastShot = now;
             }
         } else {
-            // === Regular enemies always move toward player (no stop) ===
-            e.x += (dx / dist) * spd;
-            e.y += (dy / dist) * spd;
+            // Regular enemies: blend move-toward-player with wall-avoidance lateral
+            const wallBlend = wallForceX !== 0 ? 1.8 : 0; // amplify lateral when wall is close
+            e.x += (dx / dist) * spd + wallForceX * spd * wallBlend;
+            e.y += (dy / dist) * spd + wallForceY * spd * wallBlend;
         }
 
         if (!e.ghost) checkEntityObsCollision(e);
 
-        // Enemy separation — windowed scan
+        // ── Compute actual movement angle from pre/post positions (Zero GC, no new obj) ──
+        const mdx = e.x - prevX, mdy = e.y - prevY;
+        const mlen = mdx * mdx + mdy * mdy; // squared, compare to threshold squared
+        if (mlen > 0.04) e.moveAngle = Math.atan2(mdy, mdx); // update only when actually moving
+
+        // ============================================================
+        //  STUCK DETECTION — if barely moved, give random lateral kick
+        // ============================================================
+        if (e._lastX !== undefined) {
+            const movedD = Math.hypot(e.x - e._lastX, e.y - e._lastY);
+            if (movedD < 0.4) {
+                e._stuckTimer = (e._stuckTimer || 0) + dt;
+                if (e._stuckTimer > 700) {
+                    // Kick sideways and flip side preference
+                    const kick = 14 + Math.random() * 10;
+                    e._lateralSign = (e._lateralSign === undefined ? 1 : -e._lateralSign);
+                    const perpX = -(dy / dist), perpY = (dx / dist);
+                    e.x += perpX * kick * e._lateralSign;
+                    e.y += perpY * kick * e._lateralSign;
+                    e._stuckTimer = 0;
+                }
+            } else {
+                e._stuckTimer = 0;
+                // Once moving freely, let it re-pick lateral side
+                if (wallForceX === 0) e._lateralSign = undefined;
+            }
+        }
+        e._lastX = e.x; e._lastY = e.y;
+
+        // ============================================================
+        //  SEPARATION FORCE — windowed scan, higher player-direction priority
+        // ============================================================
         if (onScreen(e.x, e.y, 200)) {
             const W = CFG.SEP_WINDOW;
             const start = Math.max(0, i - W);
@@ -1732,10 +1924,11 @@ function updateEnemies(dt) {
                 const oth = enemies[j];
                 const sdx = e.x - oth.x, sdy = e.y - oth.y;
                 const sd2 = sdx * sdx + sdy * sdy;
-                const minD = (e.size + oth.size) * 0.7; // Reduced: enemies clump tighter
+                const minD = (e.size + oth.size) * 0.7;
                 if (sd2 < minD * minD && sd2 > 0.0001) {
                     const sd = Math.sqrt(sd2);
-                    const force = (minD - sd) / minD * CFG.SEP_FORCE;
+                    // Separation force — scaled down slightly to keep group cohesion toward player
+                    const force = (minD - sd) / minD * CFG.SEP_FORCE * 0.85;
                     e.x += (sdx / sd) * force;
                     e.y += (sdy / sd) * force;
                 }
@@ -1744,13 +1937,15 @@ function updateEnemies(dt) {
 
         e.x = Math.max(0, Math.min(CFG.WORLD, e.x));
         e.y = Math.max(0, Math.min(CFG.WORLD, e.y));
-        e.angle2 = (e.angle2 || 0) + 0.05;
+
+        // Walk animation clock (used for squash/stretch in draw)
+        e.angle2 = (e.angle2 || 0) + spd * 0.08;
         // Decay impact flash
         if (e.flashTimer > 0) e.flashTimer -= dt / 1000;
 
         // Toxic cloud
         if (e.toxic && dist < 120 && player.alive && !spectatorMode) {
-            player.health -= 0.02 * dt / 16; // increased toxic dmg
+            player.health -= 0.02 * dt / 16;
             if (Math.random() < 0.03 && onScreen(e.x, e.y, 30))
                 spawnParticle(e.x + (Math.random() - 0.5) * 30, e.y + (Math.random() - 0.5) * 30, '#a5d6a7', 4, 0.6);
         }
@@ -1839,6 +2034,12 @@ function checkPlayerEnemyCollisions() {
         if (en.spider && Math.hypot(en.x - player.x, en.y - player.y) < en.size * 2.5) {
             player.x += (player.x - en.x) * 0.001;
         }
+        // Dragon terror aura: drains HP even without direct contact (aura radius 120px)
+        if (en.dragon && Math.hypot(en.x - player.x, en.y - player.y) < 120 && now - player._lastHit > 600) {
+            player.health -= en.damage * 0.08;
+            player._lastHit = now;
+            if (onScreen(en.x, en.y, 30)) spawnParticle(player.x, player.y, '#ff1744', 3, 0.6);
+        }
     }
     if (player.health <= 0) {
         player.health = 0;
@@ -1891,12 +2092,19 @@ function killEnemy(en, killerId) {
     }
     spawnGem(en.x, en.y, en.xpValue);
     // === ZERO SYNC VISUELLE: Particles generated locally, never sent over network ===
-    if (onScreen(en.x, en.y, en.size + 20)) {
-        // === COLORED PARTICLES using enemy's specific color ===
-        const pCount = (en.type === 'alien' || en.type === 'minotaur') ? 20 : 10;
+    if (showDeathParticles && onScreen(en.x, en.y, en.size + 20)) {
+        // Dragon and other bosses get dramatic death explosions
+        const isBoss = en.type === 'alien' || en.type === 'minotaur' || en.type === 'dragon';
+        const pCount = isBoss ? 25 : 5;
         for (let i = 0; i < pCount; i++) spawnParticle(en.x, en.y, en.color, 3 + Math.random() * 5);
-        // Boss death: big screen shake
-        if (en.type === 'alien' || en.type === 'minotaur') shakeCamera(14);
+        if (en.type === 'dragon') {
+            // Extra fire burst on dragon death
+            for (let i = 0; i < 12; i++) spawnParticle(en.x, en.y, '#ff6600', 5 + Math.random() * 4, 1.4);
+        }
+        if (isBoss) shakeCamera(en.type === 'dragon' ? 20 : 14);
+    } else if (!showDeathParticles && onScreen(en.x, en.y, en.size + 20)) {
+        const isBoss = en.type === 'alien' || en.type === 'minotaur' || en.type === 'dragon';
+        if (isBoss) shakeCamera(en.type === 'dragon' ? 20 : 14);
     }
     const idx = enemies.indexOf(en);
     if (idx !== -1) swapPop(enemies, idx);
@@ -2232,11 +2440,12 @@ function drawGems() {
     }
 }
 
-// === BATCH ENEMY RENDERING — ctx.font set once per type ===
+// === BATCH ENEMY RENDERING — ctx.font set once per type, transforms only for visible onscreen ===
 function drawEnemiesBatched() {
     if (enemies.length === 0) return;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
 
+    // ── Phase 1: cull and group by type (batch font set) ──────────────────────────────────
     const groups = {};
     const visible = [];
     for (const en of enemies) {
@@ -2249,24 +2458,74 @@ function drawEnemiesBatched() {
     if (!perfMode) {
         for (const [type, batch] of Object.entries(groups)) {
             const td = ET[type];
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = td.col;
+            ctx.shadowBlur = td.dragon ? 18 : 8;   // dragon gets a fiery glow
+            ctx.shadowColor = td.dragon ? '#ff6600' : td.col;
             ctx.font = ET_FONT[type]; // Set ONCE per batch — major perf win for 600 enemies
+
             for (const en of batch) {
-                if (en.ghost) ctx.globalAlpha = 0.7;
-                ctx.fillText(td.emoji, en.x, en.y);
-                ctx.globalAlpha = 1;
+                // ── Animations: only when showAnimations=true AND enemy is non-ghost ────
+                const doAnim = showAnimations && !perfMode;
+
+                if (doAnim) {
+                    // ── Squash & Stretch ─────────────────────────────────────────────────
+                    //    walkSin oscillates using en.angle2 as a walk-clock
+                    const walkSin = Math.sin(en.angle2 * 6.0);
+                    const scaleX  = 1.0 + walkSin * 0.08;
+                    const scaleY  = 1.0 - walkSin * 0.08;
+
+                    // ── Direction-aware lean rotation ────────────────────────────────────
+                    //    Extract horizontal component of movement direction to create a
+                    //    "leaning toward movement" effect (max ±15° = ±0.26 rad).
+                    //    Ghostly enemies get a gentle drift rotation instead.
+                    let rotAngle;
+                    if (en.ghost && !en.dragon) {
+                        // Ghosts: ethereal slow bob, no lean
+                        rotAngle = Math.sin(en.angle2 * 2.0) * 0.1;
+                    } else {
+                        // Lean = horizontal component of moveAngle × max lean magnitude
+                        const leanX = Math.cos(en.moveAngle || 0);
+                        rotAngle = leanX * 0.22 + walkSin * 0.06; // lean + walk wobble
+                    }
+
+                    ctx.save();
+                    ctx.translate(en.x, en.y);
+                    ctx.rotate(rotAngle);
+                    ctx.scale(scaleX, scaleY);
+                    if (en.ghost && !en.dragon) ctx.globalAlpha = 0.75;
+                    // Dragon pulse: alternating size boost on charge
+                    if (en.dragon && en.charging) ctx.scale(1.08, 1.08);
+                    ctx.fillText(td.emoji, 0, 0);
+                    ctx.globalAlpha = 1;
+                    ctx.restore();
+                } else {
+                    if (en.ghost && !en.dragon) ctx.globalAlpha = 0.7;
+                    ctx.fillText(td.emoji, en.x, en.y);
+                    ctx.globalAlpha = 1;
+                }
             }
             ctx.shadowBlur = 0;
 
+            // ── Toxic cloud ───────────────────────────────────────────────────────────────
             if (td.toxic) {
                 for (const en of batch) {
                     ctx.fillStyle = 'rgba(165,214,167,0.15)';
                     ctx.beginPath(); ctx.arc(en.x, en.y, 70, 0, Math.PI * 2); ctx.fill();
                 }
             }
+            // ── Dragon fire aura ──────────────────────────────────────────────────────────
+            if (td.dragon && !perfMode) {
+                for (const en of batch) {
+                    const pulseFire = 0.08 + Math.sin(en.angle2 * 4) * 0.04;
+                    const fg = ctx.createRadialGradient(en.x, en.y, 0, en.x, en.y, en.size * 2.2);
+                    fg.addColorStop(0, `rgba(255,100,0,${pulseFire * 2})`);
+                    fg.addColorStop(1, 'rgba(255,50,0,0)');
+                    ctx.fillStyle = fg;
+                    ctx.beginPath(); ctx.arc(en.x, en.y, en.size * 2.2, 0, Math.PI * 2); ctx.fill();
+                }
+            }
         }
     } else {
+        // ── Performance mode: circles only, zero transforms ──────────────────────────────
         for (const [type, batch] of Object.entries(groups)) {
             const td = ET[type];
             ctx.fillStyle = td.col;
@@ -2278,7 +2537,7 @@ function drawEnemiesBatched() {
         }
     }
 
-    // HP bars — batched: dark bg first, fill second
+    // ── Phase 2: HP bars batched (dark bg pass → fill pass = fewer state switches) ──────
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     for (const en of visible) {
         const bw = en.size * 2.5, bh = 5;
@@ -2291,15 +2550,12 @@ function drawEnemiesBatched() {
         ctx.fillRect(en.x - bw / 2, en.y - en.size - 12, bw * hPct, bh);
     }
 
-    // === IMPACT FLASH: white overlay when hit ===
+    // ── Phase 3: impact flash overlay (single white arc per hit enemy) ───────────────────
     for (const en of visible) {
         if (!en.flashTimer || en.flashTimer <= 0) continue;
-        const alpha = Math.min(0.85, en.flashTimer / 0.3);
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = Math.min(0.9, en.flashTimer / 0.3);
         ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(en.x, en.y, en.size + 2, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(en.x, en.y, en.size + 2, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
     }
 }
