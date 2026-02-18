@@ -148,7 +148,7 @@ for (let i = 0; i < DP_SIZE; i++) {
 let dpIdx = 0;
 
 function spawnDmgNum(x, y, dmg) {
-    if (perfMode) return;
+    if (perfMode || !showDmgNums) return;
     for (let attempt = 0; attempt < DP_SIZE; attempt++) {
         const idx = (dpIdx + attempt) % DP_SIZE;
         if (!dmgPool[idx].active) {
@@ -282,6 +282,8 @@ let roomPin = '';
 let networkPing = 0;
 let spectatorMode = false;
 let perfMode = false;
+let showDmgNums  = true;   // Toggle: show/hide damage numbers
+let showBonusPills = true; // Toggle: show/hide active bonus pills
 let playerAuraColor = '#667eea'; // Chosen aura color (persisted)
 
 // ===== PLAYER FACTORY =====
@@ -381,6 +383,9 @@ function loadSaved() {
     refreshTrophyUI();
     perfMode = localStorage.getItem('sio_perf') === '1';
     applyPerfMode();
+    showDmgNums   = localStorage.getItem('sio_showDmg')   !== '0';
+    showBonusPills = localStorage.getItem('sio_showBonus') !== '0';
+    applyDisplayToggles();
 
     // === PROFILE PERSISTENCE: restore name, emoji, aura color ===
     const savedName = localStorage.getItem('sio_name');
@@ -476,11 +481,15 @@ function refreshAchievementsTab() {
 
 function refreshTabSettings() {
     const el = id => document.getElementById(id);
-    const btn = el('togglePerfModeTab');
-    if (btn) {
-        if (perfMode) { btn.textContent = 'ON'; btn.classList.add('on'); btn.classList.remove('off'); }
-        else { btn.textContent = 'OFF'; btn.classList.remove('on'); btn.classList.add('off'); }
-    }
+    const syncBtn = (id, state) => {
+        const btn = el(id);
+        if (!btn) return;
+        btn.textContent = state ? 'ON' : 'OFF';
+        btn.className = 'toggle-btn ' + (state ? 'on' : 'off');
+    };
+    syncBtn('togglePerfModeTab', perfMode);
+    syncBtn('toggleShowDmg',     showDmgNums);
+    syncBtn('toggleShowBonus',   showBonusPills);
     if (el('tabSettingsFPS')) el('tabSettingsFPS').textContent = currentFPS;
     if (el('tabSettingsEnemies')) el('tabSettingsEnemies').textContent = enemies.length;
     let ap = 0; for (let i = 0; i < PP_SIZE; i++) { if (particlePool[i].active) ap++; }
@@ -541,7 +550,12 @@ function setupMenu() {
             const panel = document.getElementById(tabId);
             if (panel) panel.classList.add('active');
             if (btn.dataset.tab === 'succes') refreshAchievementsTab();
-            if (btn.dataset.tab === 'params') refreshTabSettings();
+            if (btn.dataset.tab === 'params') {
+                refreshTabSettings();
+                // Reveal quit button only when a game is in progress
+                const qb = document.getElementById('btnQuitTab');
+                if (qb) qb.classList.toggle('hidden', GS !== 'playing' && GS !== 'upgrade');
+            }
         };
     });
 
@@ -557,13 +571,55 @@ function setupMenu() {
             refreshTabSettings();
         };
     }
-}
+
+    // === PARAMS TAB: show/hide damage numbers ===
+    const dmgTabBtn = document.getElementById('toggleShowDmg');
+    if (dmgTabBtn) {
+        dmgTabBtn.onclick = () => {
+            showDmgNums = !showDmgNums;
+            localStorage.setItem('sio_showDmg', showDmgNums ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
+
+    // === PARAMS TAB: show/hide bonus pills ===
+    const bonusTabBtn = document.getElementById('toggleShowBonus');
+    if (bonusTabBtn) {
+        bonusTabBtn.onclick = () => {
+            showBonusPills = !showBonusPills;
+            localStorage.setItem('sio_showBonus', showBonusPills ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
+
+    // === PARAMS TAB: Quit button ===
+    const quitTabBtn = document.getElementById('btnQuitTab');
+    if (quitTabBtn) {
+        quitTabBtn.onclick = () => {
+            if (peer) { peer.destroy(); peer = null; }
+            connections = []; remotePlayers = {}; hostConn = null;
+            isHost = false; gameMode = 'solo'; GS = 'menu';
+            spectatorMode = false;
+            document.getElementById('gameOverScreen').classList.add('hidden');
+            document.getElementById('gameUI').classList.add('hidden');
+            document.getElementById('joystickZone').classList.add('hidden');
+            document.getElementById('upgradeMenu').classList.add('hidden');
+            document.getElementById('settingsPanel').classList.add('hidden');
+            showMainMenuControls();
+            document.getElementById('menuScreen').classList.add('active');
+            showToast('🚪 Partie quittée');
+        };
+    }
+} // end setupMenu
 
 function setupSettings() {
     const openSettings = () => {
         document.getElementById('settingsPanel').classList.remove('hidden');
         const inGame = GS === 'playing' || GS === 'upgrade';
         document.getElementById('btnQuitGame').classList.toggle('hidden', !inGame);
+        // Also show/hide the params-tab quit button
+        const qb = document.getElementById('btnQuitTab');
+        if (qb) qb.classList.toggle('hidden', !inGame);
         updateSettingsDisplay();
     };
     const settingsMenuBtn = document.getElementById('btnSettingsMenu');
@@ -583,6 +639,26 @@ function setupSettings() {
         perfSuggestShown = false;
         updateSettingsDisplay();
     };
+
+    // In-game settings: show/hide damage numbers
+    const dmgHUDBtn = document.getElementById('toggleShowDmgHUD');
+    if (dmgHUDBtn) {
+        dmgHUDBtn.onclick = () => {
+            showDmgNums = !showDmgNums;
+            localStorage.setItem('sio_showDmg', showDmgNums ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
+
+    // In-game settings: show/hide bonus pills
+    const bonusHUDBtn = document.getElementById('toggleShowBonusHUD');
+    if (bonusHUDBtn) {
+        bonusHUDBtn.onclick = () => {
+            showBonusPills = !showBonusPills;
+            localStorage.setItem('sio_showBonus', showBonusPills ? '1' : '0');
+            applyDisplayToggles();
+        };
+    }
     document.getElementById('btnQuitGame').onclick = () => {
         document.getElementById('settingsPanel').classList.add('hidden');
         // Clean PeerJS disconnect then return to menu
@@ -609,6 +685,26 @@ function applyPerfMode() {
         btn.textContent = 'OFF'; btn.classList.remove('on'); btn.classList.add('off');
         document.getElementById('perfBadge').classList.add('hidden');
     }
+}
+
+// ===================================================================
+//  DISPLAY TOGGLES — showDmgNums / showBonusPills
+// ===================================================================
+function applyDisplayToggles() {
+    // Sync all toggle buttons (params tab + in-game settings)
+    const syncBtn = (id, state) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        btn.textContent = state ? 'ON' : 'OFF';
+        btn.className = 'toggle-btn ' + (state ? 'on' : 'off');
+    };
+    syncBtn('toggleShowDmg',    showDmgNums);
+    syncBtn('toggleShowDmgHUD', showDmgNums);
+    syncBtn('toggleShowBonus',    showBonusPills);
+    syncBtn('toggleShowBonusHUD', showBonusPills);
+    // Show/hide the bonus pills zone
+    const ab = document.getElementById('activeBonus');
+    if (ab) ab.style.display = showBonusPills ? '' : 'none';
 }
 
 function updateSettingsDisplay() {
@@ -763,6 +859,10 @@ function handleHostMsg(d, conn) {
             const rp = remotePlayers[conn.peer];
             if (rp && rp.alive) spawnProj(rp.x, rp.y, d.a, d.dm, 0, d.ri || 0, conn.peer);
         }
+    } else if (d.t === 'fx') {
+        // Relay FX to nearby connections and spawn locally on host
+        broadcastFXToNearby(d.k, d.x, d.y, conn);
+        spawnFX(d.k, d.x, d.y);
     } else if (d.t === 'ping') {
         conn.send({ t: 'pong', ts: d.ts });
     }
@@ -807,6 +907,9 @@ function handleClientMsg(d) {
         if (d.w) currentWave = d.w;
     } else if (d.t === 'pong') {
         networkPing = Date.now() - d.ts;
+    } else if (d.t === 'fx') {
+        // Received FX event from another player via host relay
+        spawnFX(d.k, d.x, d.y);
     } else if (d.t === 'enemy_die') {
         removeEnemyById(d.ei);
         spawnGem(d.x, d.y, d.xp);
@@ -870,8 +973,12 @@ function updateEnemiesFromHost(he) {
         }
     });
     const ids = new Set(he.map(h => h.i));
+    // Only remove enemies within the cull radius — those outside might just be absent from this packet
     for (let i = enemies.length - 1; i >= 0; i--) {
-        if (!ids.has(enemies[i].id)) swapPop(enemies, i);
+        if (!ids.has(enemies[i].id)) {
+            const dx = enemies[i].x - player.x, dy = enemies[i].y - player.y;
+            if (dx * dx + dy * dy < NET_CULL_R2) swapPop(enemies, i);
+        }
     }
 }
 
@@ -883,8 +990,12 @@ function updateGemsFromHost(hg) {
         else { g.tx = h.x; g.ty = h.y; }
     });
     const ids = new Set(hg.map(h => h.i));
+    // Only remove gems within cull radius — those outside are just not in this packet
     for (let i = gems.length - 1; i >= 0; i--) {
-        if (!ids.has(gems[i].id)) swapPop(gems, i);
+        if (!ids.has(gems[i].id)) {
+            const dx = gems[i].x - player.x, dy = gems[i].y - player.y;
+            if (dx * dx + dy * dy < NET_CULL_R2) swapPop(gems, i);
+        }
     }
 }
 
@@ -911,11 +1022,72 @@ function sendPlayerInfo() {
     });
 }
 
+// ===================================================================
+//  NETWORK CULLING — Host sends only entities within 1100px per client
+// ===================================================================
+const NET_CULL_R  = 1100;          // World-units visibility radius per client
+const NET_CULL_R2 = NET_CULL_R * NET_CULL_R;
+
 function broadcastState() {
     if (!isHost) return;
-    // === ZERO SYNC VISUELLE: Only positions, HP, kills — no particles/effects ===
-    const state = { t: 'st', w: currentWave, e: serializeEnemies(), g: serializeGems(), p: buildPlayersPayload() };
-    connections.forEach(c => { if (c.open) c.send(state); });
+    const playersPay = buildPlayersPayload();
+
+    connections.forEach(c => {
+        if (!c.open) return;
+        const rp = remotePlayers[c.peer];
+        // Use known remote-player position for culling centre; fall back to world centre
+        const cx = rp ? (rp.x || CFG.WORLD / 2) : CFG.WORLD / 2;
+        const cy = rp ? (rp.y || CFG.WORLD / 2) : CFG.WORLD / 2;
+
+        // --- Cull enemies ---
+        const ce = [];
+        for (let i = 0; i < enemies.length; i++) {
+            const e = enemies[i];
+            const dx = e.x - cx, dy = e.y - cy;
+            if (dx * dx + dy * dy < NET_CULL_R2) ce.push(e);
+        }
+        // --- Cull gems ---
+        const cg = [];
+        for (let i = 0; i < gems.length; i++) {
+            const g = gems[i];
+            const dx = g.x - cx, dy = g.y - cy;
+            if (dx * dx + dy * dy < NET_CULL_R2) cg.push(g);
+        }
+
+        c.send({
+            t: 'st', w: currentWave,
+            e: ce.map(e => ({ i: e.id, x: Math.round(e.x), y: Math.round(e.y), hp: Math.round(e.health), mhp: e.maxHealth, ty: e.type, s: e.speed, d: e.damage, sz: e.size })),
+            g: cg.map(g => ({ i: g.id, x: Math.round(g.x), y: Math.round(g.y), xp: g.xp })),
+            p: playersPay,
+        });
+    });
+}
+
+// --- Broadcast a lightweight FX event to nearby connections ---
+function broadcastFXToNearby(kind, x, y, srcConn) {
+    if (!isHost) return;
+    const FX_R2 = 1300 * 1300;
+    const msg = { t: 'fx', k: kind, x: Math.round(x), y: Math.round(y) };
+    connections.forEach(c => {
+        if (c === srcConn || !c.open) return;
+        const rp = remotePlayers[c.peer];
+        if (!rp) return;
+        const dx = rp.x - x, dy = rp.y - y;
+        if (dx * dx + dy * dy < FX_R2) c.send(msg);
+    });
+}
+
+// --- Spawn FX locally from a received fx message ---
+function spawnFX(kind, x, y) {
+    if (!onScreen(x, y, 250)) return;
+    if (kind === 'blast') {
+        shakeCamera(10);
+        for (let i = 0; i < 20; i++) spawnParticle(x, y, '#f5576c', 3 + Math.random() * 5);
+    } else if (kind === 'mine') {
+        shakeCamera(7);
+        for (let p = 0; p < 16; p++) spawnParticle(x, y, '#ff9800', 4 + Math.random() * 4);
+        for (let p = 0; p < 8;  p++) spawnParticle(x, y, '#ffcc00', 5 + Math.random() * 3, 1.4);
+    }
 }
 
 function serializeEnemies() {
@@ -1127,6 +1299,12 @@ function useAbility() {
     }
     shakeCamera(16);
     for (let i = 0; i < 35; i++) spawnParticle(player.x, player.y, '#f5576c', 3 + Math.random() * 5);
+    // Broadcast explosion FX to nearby players
+    if (gameMode === 'client' && hostConn?.open) {
+        hostConn.send({ t: 'fx', k: 'blast', x: Math.round(player.x), y: Math.round(player.y) });
+    } else if (isHost) {
+        broadcastFXToNearby('blast', player.x, player.y, null);
+    }
     showToast('💥 EXPLOSION !');
 }
 
@@ -1394,6 +1572,12 @@ function updateMines(dt) {
                     for (let p = 0; p < 8; p++) spawnParticle(mine.x, mine.y, '#ffcc00', 5 + Math.random() * 3, 1.4);
                 }
                 shakeCamera(7);
+                // Broadcast mine FX to nearby players
+                if (gameMode === 'client' && hostConn?.open) {
+                    hostConn.send({ t: 'fx', k: 'mine', x: Math.round(mine.x), y: Math.round(mine.y) });
+                } else if (isHost) {
+                    broadcastFXToNearby('mine', mine.x, mine.y, null);
+                }
                 mine.active = false;
                 break;
             }
