@@ -1,36 +1,23 @@
-const CACHE_NAME = 'survivor-v1';
-const urlsToCache = [
-  '/',
-  '/index.html',
-  '/style.css',
-  '/script.js',
-  '/manifest.json'
-];
+const CACHE = 'survivor-beta-v1';
+const ASSETS = ['/', '/index.html', '/style.css', '/script.js', '/manifest.json'];
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(urlsToCache))
-  );
+self.addEventListener('install', e => {
+    e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
-
-self.addEventListener('fetch', (event) => {
-  event.respondWith(
-    caches.match(event.request)
-      .then((response) => response || fetch(event.request))
-  );
+self.addEventListener('activate', e => {
+    e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
-            return caches.delete(cacheName);
-          }
-        })
-      );
-    })
-  );
+self.addEventListener('fetch', e => {
+    const url = e.request.url;
+    if (url.includes('unpkg.com') || url.includes('peerjs')) {
+        e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+        return;
+    }
+    e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request).then(resp => {
+        if (resp && resp.status === 200 && resp.type === 'basic') {
+            const clone = resp.clone();
+            caches.open(CACHE).then(c => c.put(e.request, clone));
+        }
+        return resp;
+    })));
 });
