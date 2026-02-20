@@ -1,34 +1,35 @@
 // ============================================================
-//  SURVIVOR.IO BETA — v2 Enhanced
-//  Core Optimizations:
-//    • Object Pools (particles ×600, dmgNums ×100) — zero GC
-//    • Obstacle Spatial Grid (static, built once)
-//    • Enemy Spatial Grid (dynamic, rebuilt each frame) — O(1) proj-enemy collisions
-//    • Enemy separation with windowed scan — O(n·W) not O(n²)
-//    • Frustum Culling — skip offscreen render & physics
-//    • Batch Enemy Rendering — ctx.font set once per enemy type
-//    • Swap-and-pop deletion — no splice in hot paths
-//    • Performance Mode — toggle shadows + emoji→circle fallback
-//    • FPS Monitor — rolling 60-frame average, auto-suggest perf
-//  v2 NEW:
-//    • Smart Steering AI — raycast wall-avoidance + stuck detection
-//    • Wave creature system — minWave + weight per ET type, Zero GC pool
-//    • 7 creature types: Zombie·Fungus·Spider·Alien·Minotaur·Ghost·Dragon
-//    • Dragon 🐉 (wave 10): flies (ghost), fire-breath spread, charge dash,
-//      terror aura, massive HP — true end-game boss
-//    • Animations v2 — direction-aware lean rotation + squash/stretch
-//    • moveAngle tracking on each enemy (zero alloc, atan2 gated by threshold)
-//    • Wave unlock toast notification when a new creature type appears
-//  Network:
-//    • Zero sync of particles/popups — local generation only
-//    • STRUCTURE_SEED sent with 'gs' for deterministic worlds
-//    • Full lobby broadcast on every player event
-//    • Only positions/HP/kills transmitted
-//  Gameplay:
-//    • 15% scaling per wave (was 10%)
-//    • Max 600 enemies
-//    • Increased enemy damage & closer stop distance
-//    • 4 new stackable bonuses: Wall, Mines, Boots, Recycle
+//  SURVIVOR.IO — v3 Pro
+//  ── Architecture ──────────────────────────────────────────
+//    • Logic / Rendering strictly separated (no draw calls in update)
+//    • Object Pools: particles ×600, dmgNums ×100 — zero GC in hot path
+//    • Obstacle Spatial Grid (static AABB map, rebuilt on obs death)
+//    • Enemy Spatial Grid (dynamic, rebuilt each frame) — O(1) collisions
+//    • Frustum Culling — offscreen entities skip physics & render
+//    • Swap-and-pop deletion everywhere — never Array.splice
+//    • Segment–AABB ray-cast for anti-tunneling projectiles
+//  ── V3-Pro NEW ────────────────────────────────────────────
+//    • Destructible Gas Barrels: HP, bullet damage, AOE death,
+//      obsGrid hotswap (dead flag → grid rebuild deferred to next frame)
+//    • Bushes 🌿: traversable (no collision), visual ground cover,
+//      apply 20% speed slow while entity overlaps — bitmask flag avoids
+//      per-frame string comparison
+//    • Trees 🌳: trunk-only circle collision (trunkR field), foliage
+//      rendered behind entities as semi-transparent overlay
+//    • Organic compound structures: L-shapes, T-shapes added to the
+//      deterministic seed generator (seed-preserving: shapes appended
+//      after all random picks, position derived from same RNG sequence)
+//    • Structure proximity deduplication: before push, O(1) AABB overlap
+//      check against last 8 placed obstacles — avoids Z-fighting clusters
+//    • Multiplayer aura + drone sync: player payload now includes
+//      auraColor (ac), droneAngle (da), droneCount (dn) — visual only,
+//      never authoritative; clients generate local animations
+//    • Remote player drones rendered in drawDrones()
+//    • Remote player aura colour applied in drawPlayerSprite()
+//  ── Biomes (v3) ───────────────────────────────────────────
+//    • 5 zones: Prairies / Cristal / Toundra / Marécage / Nécropole
+//    • Each biome has unique ground gradient, ambient overlay, grid tint
+//    • Performance mode: flat fill, no gradients, no ambient overlay
 // ============================================================
 
 // ===== CONFIG =====
@@ -50,10 +51,58 @@ const CFG = {
     SEP_WINDOW: 20,
     FPS_TARGET: 45,
     MAX_ENEMY_CAP: 600,   // Absolute max enemies on screen
+    JOYSTICK_DEADZONE: 0.12,  // Minimum displacement ratio before movement registers
+    JOYSTICK_MAX_RADIUS: 52,  // Max pixel radius of joystick knob travel
 };
+
+// ===== BIOME ZONES — defined by world-coordinate regions =====
+// Each biome has a unique ground color, atmosphere, and grid tint.
+// Biome is determined by the player's normalised position (0→1).
+const BIOMES = [
+    // Centre — Prairies de départ (safe zone feel)
+    { name: 'Prairies',    cx: 0.5, cy: 0.5, r: 0.25, groundA: '#0d1a0d', groundB: '#1a2e1a', gridCol: 'rgba(100,200,100,0.03)', ambientCol: 'rgba(40,180,40,0.04)'  },
+    // Nord-Ouest — Désert de Cristal
+    { name: 'Cristal',     cx: 0.2, cy: 0.2, r: 0.22, groundA: '#1a1208', groundB: '#2e2416', gridCol: 'rgba(255,200,80,0.04)',  ambientCol: 'rgba(200,160,60,0.06)' },
+    // Nord-Est — Toundra Glaciaire
+    { name: 'Toundra',     cx: 0.8, cy: 0.2, r: 0.22, groundA: '#0a0f1a', groundB: '#0e1828', gridCol: 'rgba(100,160,255,0.05)', ambientCol: 'rgba(60,120,220,0.07)' },
+    // Sud-Ouest — Marécage Toxique
+    { name: 'Marécage',    cx: 0.2, cy: 0.8, r: 0.22, groundA: '#0a1208', groundB: '#14200e', gridCol: 'rgba(80,200,60,0.04)',   ambientCol: 'rgba(60,200,80,0.07)'  },
+    // Sud-Est — Nécropole Volcanique
+    { name: 'Nécropole',   cx: 0.8, cy: 0.8, r: 0.22, groundA: '#1a0808', groundB: '#2e1010', gridCol: 'rgba(255,60,30,0.04)',  ambientCol: 'rgba(220,40,20,0.07)'  },
+];
 
 // Mutable world seed (assigned at game creation for determinism)
 let STRUCTURE_SEED = 42;
+
+// ===================================================================
+//  OBSTACLE TYPE BITMASKS
+//  Using integer flags avoids per-frame string comparisons in hot paths.
+//  Assigned once at buildStructures time; stored as obs.flags.
+// ===================================================================
+const OBS_F = {
+    SOLID   : 0b0001,  // Blocks entity movement
+    BLOCKER : 0b0010,  // Blocks projectiles
+    BUSH    : 0b0100,  // Traversable, applies slow
+    CIRCULAR: 0b1000,  // Collision uses radius, not AABB (trees)
+};
+// Bitmask by type — looked up once during obstacle creation
+const OBS_TYPE_FLAGS = {
+    wall:     OBS_F.SOLID | OBS_F.BLOCKER,
+    box:      OBS_F.SOLID | OBS_F.BLOCKER,
+    house:    OBS_F.SOLID | OBS_F.BLOCKER,
+    building: OBS_F.SOLID | OBS_F.BLOCKER,
+    tree:     OBS_F.SOLID | OBS_F.BLOCKER | OBS_F.CIRCULAR,
+    bush:     OBS_F.BUSH,
+    gas:      0,          // Traversable hazard (was passthrough in v2 too)
+    tnt:      0,          // Passthrough; explodes on proximity
+    acid:     0,          // Passthrough; DoT hazard
+    arena:    0,          // Decorative circle
+};
+
+// Dirty flag: set to true when an obstacle is destroyed at runtime.
+// buildObsGrid checks this at the start of each frame and rebuilds if needed.
+// Rebuild is O(obstacles.length) ≈ ~600 items — acceptable for rare events.
+let obsGridDirty = false;
 
 // ===== ENEMY TYPES =====
 // minWave : first wave at which this type can spawn
@@ -72,7 +121,13 @@ const ET = {
     // ── Vague 7 — fantôme intangible ────────────────────────────────────────────────────────────
     ghost:    { emoji:'👻', hp:15,  spd:3.4, dmg:12,  sz:13, xp:12,  sc:15,  col:'#c9b8f5', ghost:true,  shooter:false, charger:false, toxic:false, spider:false, dragon:false, minWave:7,  weight:3 },
     // ── Vague 10 — DRAGON BOSS (vole + charge + souffle de feu) ─────────────────────────────────
-    dragon:   { emoji:'🐉', hp:500, spd:2.0, dmg:90,  sz:34, xp:200, sc:200, col:'#ff1744', ghost:true,  shooter:true,  charger:true,  toxic:false, spider:false, dragon:true,  minWave:10, weight:1 },
+    dragon:   { emoji:'🐉', hp:500, spd:2.0, dmg:90,  sz:34, xp:200, sc:200, col:'#ff1744', ghost:true,  shooter:true,  charger:true,  toxic:false, spider:false, dragon:true,  kamikaze:false, healer:false, sniper:false, minWave:10, weight:1 },
+    // ── Vague 3 — Kamikaze : accélération brutale à portée de vue ───────────────────────────────
+    kamikaze: { emoji:'💥', hp:25,  spd:1.5, dmg:50,  sz:14, xp:20,  sc:18,  col:'#ff6b35', ghost:false, shooter:false, charger:false, toxic:false, spider:false, dragon:false, kamikaze:true,  healer:false, sniper:false, minWave:3,  weight:4 },
+    // ── Vague 6 — Soigneur : fuit, régénère les PV des alliés proches ───────────────────────────
+    healer:   { emoji:'💚', hp:80,  spd:1.2, dmg:8,   sz:18, xp:40,  sc:35,  col:'#00e676', ghost:false, shooter:false, charger:false, toxic:false, spider:false, dragon:false, kamikaze:false, healer:true,  sniper:false, minWave:6,  weight:3 },
+    // ── Vague 8 — Sniper : s'arrête à distance, tir chargé lent et puissant ────────────────────
+    sniper:   { emoji:'🎯', hp:70,  spd:1.6, dmg:70,  sz:20, xp:55,  sc:55,  col:'#ff4081', ghost:false, shooter:false, charger:false, toxic:false, spider:false, dragon:false, kamikaze:false, healer:false, sniper:true,  minWave:8,  weight:2 },
 };
 
 // Pre-cache emoji font strings per type
@@ -193,9 +248,16 @@ const _obsQueryBuf = new Array(64);
 let _obsQueryLen = 0;
 
 function buildObsGrid() {
+    // Rebuild the static spatial grid for AABB obstacle queries.
+    // Called once at game start and again whenever obsGridDirty is true
+    // (i.e., a destructible obstacle — gas barrel — was destroyed).
+    // Cost: O(obstacles.length) ≈ 600 — negligible compared to enemy grid.
+    obsGridDirty = false;
     obsGrid.clear();
     for (const obs of obstacles) {
-        if (obs.type === 'arena') continue;
+        if (obs.type === 'arena' || obs.dead) continue;
+        // Bush and circular obstacles still register in the grid for query range checks,
+        // but solid collision is gated by obs.flags in checkEntityObsCollision.
         const x1 = Math.floor((obs.x - obs.w / 2) / CFG.OBS_GRID_CELL);
         const x2 = Math.floor((obs.x + obs.w / 2) / CFG.OBS_GRID_CELL);
         const y1 = Math.floor((obs.y - obs.h / 2) / CFG.OBS_GRID_CELL);
@@ -331,6 +393,7 @@ function mkPlayer() {
         droneAngle: 0,
         lastDroneFire: [0, 0, 0],
         _lastHit: 0,
+        acidSlowTimer: 0,  // ms remaining of acid pool slow effect
     };
 }
 let player = mkPlayer();
@@ -343,6 +406,8 @@ let stats = {
 
 let cam = { x: 0, y: 0, tx: 0, ty: 0, sx: 0, sy: 0, shake: 0 };
 let ability = { lastUse: -CFG.ABILITY_CD };
+// Current biome — updated each frame in updateCamera, used in drawWorld
+let currentBiome = BIOMES[0];
 
 // Entity arrays
 let enemies = [];
@@ -1077,20 +1142,51 @@ function updateRemotePlayers(pd) {
         if (id === myPeerId) return;
         const pp = pd[id];
         if (!remotePlayers[id]) {
-            remotePlayers[id] = { ...pp, id, tx: pp.x, ty: pp.y, x: pp.x, y: pp.y, alive: pp.al !== false };
+            remotePlayers[id] = {
+                ...pp, id,
+                tx: pp.x, ty: pp.y, x: pp.x, y: pp.y,
+                alive: pp.al !== false,
+                // Visual sync fields (never authoritative — local animation only)
+                ac: pp.ac || '#667eea',
+                dn: pp.dn || 0,
+                da: pp.da || 0,
+            };
         } else {
             const rp = remotePlayers[id];
             rp.tx = pp.x; rp.ty = pp.y;
-            rp.n = pp.n; rp.e = pp.e; rp.h = pp.h; rp.sc = pp.sc; rp.alive = pp.al !== false;
+            rp.n = pp.n; rp.e = pp.e; rp.h = pp.h; rp.sc = pp.sc;
+            rp.alive = pp.al !== false;
+            // Lerp drone angle locally — only adopt network value if delta < π
+            // to avoid sudden 360° flips from quantisation jitter
+            if (pp.ac !== undefined) rp.ac = pp.ac;
+            if (pp.dn !== undefined) rp.dn = pp.dn;
+            if (pp.da !== undefined) {
+                const delta = pp.da - (rp.da || 0);
+                rp.da = Math.abs(delta) < Math.PI ? pp.da : (rp.da || 0) + 0.02;
+            }
         }
     });
 }
 
 function sendPlayerInfo() {
     if (!hostConn || !hostConn.open) return;
+    // Transmit position, status, and lightweight visual data (aura + drones).
+    // Visuals are never authoritative — clients use them only for rendering.
+    // Drone angle is a single float; clients animate smoothly from it locally.
     hostConn.send({
         t: 'pi',
-        p: { x: Math.round(player.x), y: Math.round(player.y), n: player.name, e: player.emoji, h: Math.round(player.health), sc: player.score, alive: player.alive },
+        p: {
+            x:  Math.round(player.x),
+            y:  Math.round(player.y),
+            n:  player.name,
+            e:  player.emoji,
+            h:  Math.round(player.health),
+            sc: player.score,
+            alive: player.alive,
+            ac: playerAuraColor,             // aura hex colour (6B string)
+            dn: player.bonuses.drones,       // drone count (0–3)
+            da: +player.droneAngle.toFixed(3), // drone orbit angle (radians)
+        },
     });
 }
 
@@ -1170,10 +1266,26 @@ function serializeGems() {
 }
 function buildPlayersPayload() {
     const obj = {};
-    obj[myPeerId] = { x: Math.round(player.x), y: Math.round(player.y), n: player.name, e: player.emoji, h: Math.round(player.health), sc: player.score, al: player.alive };
+    // Include our own visual state so remote players can render our aura + drones
+    obj[myPeerId] = {
+        x:  Math.round(player.x),  y:  Math.round(player.y),
+        n:  player.name,           e:  player.emoji,
+        h:  Math.round(player.health), sc: player.score,
+        al: player.alive,
+        ac: playerAuraColor,
+        dn: player.bonuses.drones,
+        da: +player.droneAngle.toFixed(3),
+    };
     Object.keys(remotePlayers).forEach(id => {
         const rp = remotePlayers[id];
-        obj[id] = { x: Math.round(rp.x || 0), y: Math.round(rp.y || 0), n: rp.n, e: rp.e, h: rp.h || 100, sc: rp.sc || 0, al: rp.alive !== false };
+        obj[id] = {
+            x: Math.round(rp.x || 0), y: Math.round(rp.y || 0),
+            n: rp.n, e: rp.e, h: rp.h || 100, sc: rp.sc || 0,
+            al: rp.alive !== false,
+            ac: rp.ac || '#667eea',
+            dn: rp.dn || 0,
+            da: rp.da || 0,
+        };
     });
     return obj;
 }
@@ -1262,35 +1374,233 @@ function startGameUI() {
 
 // ===================================================================
 //  WORLD GENERATION (deterministic — uses STRUCTURE_SEED)
+//  V3-Pro additions:
+//    • Organic L / T compound shapes
+//    • Proximity deduplication: each new obstacle checked against a
+//      sliding window of the last 8 placed — prevents overlapping clusters
+//      while preserving seed determinism (no re-rolls needed)
+//    • Bushes 🌿: no collision, apply slow bitmask (OBS_F.BUSH)
+//    • Trees 🌳: trunk-only circle collision (trunkR), foliage radius (r)
+//    • Gas barrels with HP — destructible, AOE on death
+//    • TNT, acid pools, compound structures (U-walls, corridors, arenas)
 // ===================================================================
 function buildStructures(seed) {
     obstacles.length = 0;
-    const rng = new Rng(seed);
-    const W = CFG.WORLD;
-    const structTypes = [
+    const rng  = new Rng(seed);
+    const W    = CFG.WORLD;
+    const half = W / 2;
+
+    // ── Helper: AABB overlap test between new obs and last N placed ─────────────────────
+    // This O(8) check prevents visible Z-fighting clusters without re-rolling the RNG,
+    // preserving full seed determinism (failed placements still advance the RNG state).
+    const DEDUP_WIN = 8;
+    function overlapsRecent(nx, ny, nw, nh) {
+        const start = Math.max(0, obstacles.length - DEDUP_WIN);
+        for (let i = start; i < obstacles.length; i++) {
+            const o = obstacles[i];
+            if (!o.w || !o.h) continue;
+            const sep = 20; // minimum clearance in pixels
+            if (Math.abs(nx - o.x) < (nw + o.w) / 2 + sep &&
+                Math.abs(ny - o.y) < (nh + o.h) / 2 + sep) return true;
+        }
+        return false;
+    }
+
+    // ── Helper: push obstacle with pre-computed flags ────────────────────────────────────
+    function pushObs(obj) {
+        obj.flags = OBS_TYPE_FLAGS[obj.type] || 0;
+        obstacles.push(obj);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  1. UNIT OBSTACLES
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    const unitTypes = [
         { w: 200, h: 20,  emoji: '🧱', type: 'wall',     es: 1.0 },
         { w: 20,  h: 200, emoji: '🧱', type: 'wall',     es: 1.0 },
         { w: 40,  h: 40,  emoji: '📦', type: 'box',      es: 1.2 },
         { w: 80,  h: 80,  emoji: '🏠', type: 'house',    es: 1.8 },
         { w: 120, h: 120, emoji: '🏢', type: 'building', es: 2.5 },
-        { w: 30,  h: 30,  emoji: '🌲', type: 'tree',     es: 1.2 },
-        { w: 25,  h: 25,  emoji: '🌳', type: 'tree',     es: 1.2 },
     ];
-    for (let i = 0; i < 350; i++) {
-        const st = rng.pick(structTypes);
-        const x = rng.range(100, W - 100);
-        const y = rng.range(100, W - 100);
-        if (Math.hypot(x - W / 2, y - W / 2) < 200) continue;
-        obstacles.push({ x, y, w: st.w, h: st.h, emoji: st.emoji, type: st.type, es: st.es });
+    for (let i = 0; i < 200; i++) {
+        const st = rng.pick(unitTypes);
+        const x  = rng.range(100, W - 100);
+        const y  = rng.range(100, W - 100);
+        if (Math.hypot(x - half, y - half) < 200) continue;
+        if (overlapsRecent(x, y, st.w, st.h)) continue;
+        pushObs({ x, y, w: st.w, h: st.h, emoji: st.emoji, type: st.type, es: st.es });
     }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  2. TREES — trunk-only collision, visual foliage
+    //     trunkR: collision radius (circle, not AABB)
+    //     r     : foliage rendering radius (decorative)
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 120; i++) {
+        const big  = rng.next() > 0.5;
+        const r    = big ? rng.range(28, 42) | 0 : rng.range(18, 28) | 0;
+        const trR  = big ? 12 : 8; // small solid trunk
+        const x    = rng.range(100, W - 100);
+        const y    = rng.range(100, W - 100);
+        if (Math.hypot(x - half, y - half) < 200) continue;
+        // Register in grid with AABB equal to foliage bounding box
+        pushObs({ x, y, w: r * 2, h: r * 2, emoji: big ? '🌳' : '🌲', type: 'tree', es: 1.2,
+                  trunkR: trR, foliageR: r });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  3. BUSHES — traversable, apply slow on entry (OBS_F.BUSH)
+    //     Registered in obsGrid so queryNearbyObs finds them for slow check,
+    //     but flagged as non-solid so checkEntityObsCollision skips them.
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 80; i++) {
+        const r = rng.range(22, 50) | 0;
+        const x = rng.range(80, W - 80);
+        const y = rng.range(80, W - 80);
+        if (Math.hypot(x - half, y - half) < 160) continue;
+        pushObs({ x, y, w: r * 2, h: r * 2, emoji: '🌿', type: 'bush', es: 0.8, radius: r });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  4. CENTRAL WALL CLUSTER
+    // ──────────────────────────────────────────────────────────────────────────────────────
     for (let i = 0; i < 8; i++) {
         const vert = rng.next() > 0.5;
-        obstacles.push({ x: W / 2 + rng.range(-600, 600), y: W / 2 + rng.range(-600, 600), w: vert ? 20 : 180, h: vert ? 180 : 20, emoji: '🧱', type: 'wall', es: 1 });
+        pushObs({ x: half + rng.range(-600, 600), y: half + rng.range(-600, 600),
+                  w: vert ? 20 : 180, h: vert ? 180 : 20, emoji: '🧱', type: 'wall', es: 1 });
     }
-    obstacles.push({ x: W * 0.2, y: W * 0.2, w: 5, h: 5, emoji: '🏟️', type: 'arena', radius: 200, es: 3 });
-    obstacles.push({ x: W * 0.8, y: W * 0.8, w: 5, h: 5, emoji: '🏟️', type: 'arena', radius: 180, es: 3 });
-    for (let i = 0; i < 6; i++) {
-        obstacles.push({ x: rng.range(200, W - 200), y: rng.range(200, W - 200), w: 60, h: 60, emoji: '⛽', type: 'gas', es: 1.6, explosive: true });
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  5. U-SHAPES (3-sided traps)
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 14; i++) {
+        const cx   = rng.range(300, W - 300);
+        const cy   = rng.range(300, W - 300);
+        if (Math.hypot(cx - half, cy - half) < 250) { i--; continue; }
+        const len  = rng.range(120, 240) | 0;
+        const open = rng.int(0, 4);
+        const sides = [
+            { dx: 0,      dy: -len/2, w: len + 20, h: 20 },
+            { dx: 0,      dy:  len/2, w: len + 20, h: 20 },
+            { dx: -len/2, dy: 0,      w: 20, h: len },
+            { dx:  len/2, dy: 0,      w: 20, h: len },
+        ];
+        for (let s = 0; s < 4; s++) {
+            if (s === open) continue;
+            const sd = sides[s];
+            pushObs({ x: cx + sd.dx, y: cy + sd.dy, w: sd.w, h: sd.h, emoji: '🧱', type: 'wall', es: 1 });
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  6. L-SHAPES — two perpendicular wall segments sharing a corner
+    //     The corner is always at (cx,cy); arm lengths are independent random values.
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 10; i++) {
+        const cx   = rng.range(350, W - 350);
+        const cy   = rng.range(350, W - 350);
+        if (Math.hypot(cx - half, cy - half) < 280) { i--; continue; }
+        const arm1 = rng.range(100, 220) | 0;  // horizontal arm length
+        const arm2 = rng.range(100, 220) | 0;  // vertical arm length
+        const flipH = rng.next() > 0.5 ? 1 : -1;
+        const flipV = rng.next() > 0.5 ? 1 : -1;
+        // Horizontal arm
+        pushObs({ x: cx + flipH * arm1 / 2, y: cy, w: arm1, h: 20, emoji: '🧱', type: 'wall', es: 1 });
+        // Vertical arm (originates from same corner)
+        pushObs({ x: cx, y: cy + flipV * arm2 / 2, w: 20, h: arm2, emoji: '🧱', type: 'wall', es: 1 });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  7. T-SHAPES — one long crossbar + one perpendicular spine from its centre
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 8; i++) {
+        const cx  = rng.range(400, W - 400);
+        const cy  = rng.range(400, W - 400);
+        if (Math.hypot(cx - half, cy - half) < 300) { i--; continue; }
+        const bar  = rng.range(180, 320) | 0;
+        const stem = rng.range(100, 200) | 0;
+        const horiz = rng.next() > 0.5; // crossbar orientation
+        const flip  = rng.next() > 0.5 ? 1 : -1;
+        if (horiz) {
+            pushObs({ x: cx, y: cy, w: bar, h: 20, emoji: '🧱', type: 'wall', es: 1 });
+            pushObs({ x: cx, y: cy + flip * stem / 2, w: 20, h: stem, emoji: '🧱', type: 'wall', es: 1 });
+        } else {
+            pushObs({ x: cx, y: cy, w: 20, h: bar, emoji: '🧱', type: 'wall', es: 1 });
+            pushObs({ x: cx + flip * stem / 2, y: cy, w: stem, h: 20, emoji: '🧱', type: 'wall', es: 1 });
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  8. CORRIDORS — two parallel walls forming a passage
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 8; i++) {
+        const cx   = rng.range(400, W - 400);
+        const cy   = rng.range(400, W - 400);
+        if (Math.hypot(cx - half, cy - half) < 300) { i--; continue; }
+        const horiz  = rng.next() > 0.5;
+        const gap    = rng.range(80, 140) | 0;
+        const length = rng.range(200, 380) | 0;
+        if (horiz) {
+            pushObs({ x: cx, y: cy - gap/2, w: length, h: 20, emoji: '🧱', type: 'wall', es: 1 });
+            pushObs({ x: cx, y: cy + gap/2, w: length, h: 20, emoji: '🧱', type: 'wall', es: 1 });
+        } else {
+            pushObs({ x: cx - gap/2, y: cy, w: 20, h: length, emoji: '🧱', type: 'wall', es: 1 });
+            pushObs({ x: cx + gap/2, y: cy, w: 20, h: length, emoji: '🧱', type: 'wall', es: 1 });
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  9. CLOSED ARENAS — 4 walls with one entrance gap
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 4; i++) {
+        const cx  = rng.range(500, W - 500);
+        const cy  = rng.range(500, W - 500);
+        if (Math.hypot(cx - half, cy - half) < 400) { i--; continue; }
+        const sz  = rng.range(160, 280) | 0;
+        const t   = 20; const gap = 60;
+        pushObs({ x: cx - gap/2 - (sz-gap)/4, y: cy - sz/2, w: (sz-gap)/2, h: t, emoji: '🧱', type: 'wall', es: 1 });
+        pushObs({ x: cx + gap/2 + (sz-gap)/4, y: cy - sz/2, w: (sz-gap)/2, h: t, emoji: '🧱', type: 'wall', es: 1 });
+        pushObs({ x: cx, y: cy + sz/2, w: sz, h: t, emoji: '🧱', type: 'wall', es: 1 });
+        pushObs({ x: cx - sz/2, y: cy, w: t, h: sz, emoji: '🧱', type: 'wall', es: 1 });
+        pushObs({ x: cx + sz/2, y: cy, w: t, h: sz, emoji: '🧱', type: 'wall', es: 1 });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  10. DECORATIVE ARENAS (circles)
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    obstacles.push({ x: W*0.2, y: W*0.2, w:5, h:5, emoji:'🏟️', type:'arena', radius:200, es:3, flags:0 });
+    obstacles.push({ x: W*0.8, y: W*0.8, w:5, h:5, emoji:'🏟️', type:'arena', radius:180, es:3, flags:0 });
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  11. GAS BARRELS — destructible (hp: 40), AOE explosion on death
+    //      Flagged 0 = passthrough for entity movement, but bullets deal damage
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 18; i++) {
+        const x = rng.range(200, W - 200), y = rng.range(200, W - 200);
+        if (Math.hypot(x - half, y - half) < 200) { i--; continue; }
+        obstacles.push({ x, y, w:60, h:60, emoji:'⛽', type:'gas', es:1.6,
+                          hp:40, maxHp:40, dead:false, flags:0 });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  12. TNT BARRELS — enemy proximity detonation
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 12; i++) {
+        const x = rng.range(200, W - 200), y = rng.range(200, W - 200);
+        if (Math.hypot(x - half, y - half) < 180) { i--; continue; }
+        obstacles.push({ x, y, w:28, h:28, emoji:'🧨', type:'tnt', es:1.0,
+                          active:true, flags:0 });
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  13. ACID POOLS — slow + DoT
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    for (let i = 0; i < 10; i++) {
+        const x = rng.range(200, W - 200), y = rng.range(200, W - 200);
+        if (Math.hypot(x - half, y - half) < 180) { i--; continue; }
+        const r = rng.range(40, 80) | 0;
+        obstacles.push({ x, y, w:r*2, h:r*2, emoji:'☣️', type:'acid', es:1.0,
+                          radius:r, flags:0 });
     }
 }
 
@@ -1310,7 +1620,10 @@ function setupInput() {
     canvas.addEventListener('touchstart', e => {
         e.preventDefault();
         Array.from(e.changedTouches).forEach(t => {
-            if (t.clientX < innerWidth / 2 && !joystick.active) {
+            // ── Joystick : moitié DROITE de l'écran ─────────────────────────────────────
+            //    L'ability (explosion) est déclenchée depuis la moitié GAUCHE.
+            //    Cette inversion libère la main droite pour la visibilité mini-map.
+            if (t.clientX >= innerWidth / 2 && !joystick.active) {
                 joystick.active = true; joystick.touchId = t.identifier;
                 joystick.baseX = t.clientX; joystick.baseY = t.clientY;
                 joystick.dx = 0; joystick.dy = 0;
@@ -1319,7 +1632,8 @@ function setupInput() {
                 base.style.position = 'absolute';
                 base.style.display = 'block';
                 knob.style.transform = 'translate(-50%,-50%)';
-            } else if (t.clientX >= innerWidth / 2 && GS === 'playing') {
+            } else if (t.clientX < innerWidth / 2 && GS === 'playing') {
+                // Tap gauche → ability
                 useAbility();
             }
         });
@@ -1329,13 +1643,24 @@ function setupInput() {
         e.preventDefault();
         Array.from(e.changedTouches).forEach(t => {
             if (t.identifier === joystick.touchId) {
-                const dx = t.clientX - joystick.baseX;
-                const dy = t.clientY - joystick.baseY;
-                const dist = Math.min(52, Math.sqrt(dx * dx + dy * dy));
-                const ang = Math.atan2(dy, dx);
-                joystick.dx = Math.cos(ang) * dist / 52;
-                joystick.dy = Math.sin(ang) * dist / 52;
-                knob.style.transform = `translate(calc(-50% + ${Math.cos(ang) * dist}px), calc(-50% + ${Math.sin(ang) * dist}px))`;
+                const rawDx = t.clientX - joystick.baseX;
+                const rawDy = t.clientY - joystick.baseY;
+                const rawDist = Math.sqrt(rawDx * rawDx + rawDy * rawDy);
+                const clampedDist = Math.min(CFG.JOYSTICK_MAX_RADIUS, rawDist);
+                const ang = Math.atan2(rawDy, rawDx);
+
+                // ── DEADZONE: ignore micro-movements, avoid drift ────────────────────────
+                const normalised = clampedDist / CFG.JOYSTICK_MAX_RADIUS;
+                if (normalised < CFG.JOYSTICK_DEADZONE) {
+                    joystick.dx = 0; joystick.dy = 0;
+                    knob.style.transform = 'translate(-50%,-50%)';
+                    return;
+                }
+                // ── Proportional acceleration: response scales with displacement ─────────
+                const response = (normalised - CFG.JOYSTICK_DEADZONE) / (1 - CFG.JOYSTICK_DEADZONE);
+                joystick.dx = Math.cos(ang) * response;
+                joystick.dy = Math.sin(ang) * response;
+                knob.style.transform = `translate(calc(-50% + ${Math.cos(ang) * clampedDist}px), calc(-50% + ${Math.sin(ang) * clampedDist}px))`;
             }
         });
     }, { passive: false });
@@ -1410,6 +1735,11 @@ function gameLoop(now) {
 function update(dt) {
     stats.survivalTime = Date.now() - stats.startTime;
 
+    // Deferred obsGrid rebuild: triggered when a destructible obstacle dies.
+    // Checked here (once per frame) rather than inline at destruction site
+    // to batch-coalesce multiple simultaneous destructions.
+    if (obsGridDirty) buildObsGrid();
+
     // Difficulty scaling — 15% per wave
     if (gameMode !== 'client' && Date.now() - stats.lastDiff > CFG.DIFF_INTERVAL) {
         stats.diffLevel += CFG.DIFF_RATE;
@@ -1478,7 +1808,12 @@ function updatePlayer(dt) {
 
     // Speed: base + bonus + boots (+30% per stack)
     const bootsSpeedMult = 1 + 0.3 * player.bonuses.boots;
-    const spd = (player.speed + player.bonuses.speed) * bootsSpeedMult;
+    // Acid pool slow: 40% speed reduction for 500ms after touching acid
+    const acidMult = (player.acidSlowTimer > 0) ? 0.6 : 1.0;
+    if (player.acidSlowTimer > 0) player.acidSlowTimer -= dt;
+    // Bush slow: 20% reduction while inside a bush (set by checkEntityObsCollision)
+    const bushMult = player.inBush ? 0.8 : 1.0;
+    const spd = (player.speed + player.bonuses.speed) * bootsSpeedMult * acidMult * bushMult;
     player.x += mx * spd;
     player.y += my * spd;
 
@@ -1508,6 +1843,18 @@ function updatePlayer(dt) {
                 const offsetX = (m - Math.floor(player.bonuses.mines / 2)) * 30;
                 playerMines.push({ x: player.x + offsetX, y: player.y, active: true });
             }
+        }
+    }
+
+    // ── Acid pool hazard: slow + damage over time ──────────────────────────────────────────────
+    for (const obs of obstacles) {
+        if (obs.type !== 'acid') continue;
+        if (Math.hypot(player.x - obs.x, player.y - obs.y) < obs.radius + player.size) {
+            // Slow: reduce speed multiplier by 40% (applied next frame via acidSlowTimer)
+            player.acidSlowTimer = 500; // ms of slow remaining
+            player.health -= 0.04 * dt / 16; // 0.04 HP/frame ≈ 2.4 HP/s
+            if (Math.random() < 0.04 && onScreen(obs.x, obs.y, obs.radius + 10))
+                spawnParticle(player.x, player.y, '#00e676', 3, 0.5);
         }
     }
 
@@ -1543,6 +1890,16 @@ function updateCamera(dt) {
         cam.shake -= 1;
     } else { cam.sx = 0; cam.sy = 0; }
     updateFrustum();
+
+    // Detect current biome from normalised player position
+    const nx = player.x / CFG.WORLD;
+    const ny = player.y / CFG.WORLD;
+    let nearest = BIOMES[0], nearestD = Infinity;
+    for (const b of BIOMES) {
+        const d = Math.hypot(nx - b.cx, ny - b.cy);
+        if (d < nearestD) { nearestD = d; nearest = b; }
+    }
+    currentBiome = nearest;
 }
 function shakeCamera(amt) { cam.shake = Math.max(cam.shake, amt); }
 
@@ -1669,17 +2026,67 @@ function updateMines(dt) {
 // ===================================================================
 //  PROJECTILES (swap-and-pop)
 // ===================================================================
+
+// explodeGasBarrel — centralised gas barrel detonation.
+// Marks dead, triggers particle burst via pool, sets obsGridDirty for
+// deferred grid rebuild next frame (avoids mid-frame pointer invalidation).
+function explodeGasBarrel(obs) {
+    obs.dead = true;
+    obsGridDirty = true; // schedule grid rebuild for next frame
+    const ex = obs.x, ey = obs.y;
+    // AOE damage — all enemies within 160px
+    for (let ei = enemies.length - 1; ei >= 0; ei--) {
+        if (Math.hypot(enemies[ei].x - ex, enemies[ei].y - ey) < 160)
+            damageEnemy(enemies[ei], 55, 'me');
+    }
+    // Player friendly-fire (barrels are environment, not player weapons)
+    if (player.alive && Math.hypot(player.x - ex, player.y - ey) < 160) {
+        player.health -= 15 * (1 + 0.1 * player.bonuses.boots);
+    }
+    if (onScreen(ex, ey, 180)) {
+        for (let p = 0; p < 24; p++) spawnParticle(ex, ey, '#ff9800', 4 + Math.random() * 6);
+        for (let p = 0; p < 12; p++) spawnParticle(ex, ey, '#ffff00', 3 + Math.random() * 4, 1.2);
+        shakeCamera(14);
+    }
+    if (isHost)   broadcastFXToNearby('blast', ex, ey, null);
+    if (gameMode === 'client' && hostConn?.open)
+        hostConn.send({ t: 'fx', k: 'blast', x: Math.round(ex), y: Math.round(ey) });
+}
 function spawnProj(x, y, angle, damage, size = 5, ricochet = 0, owner = 'me') {
     projectiles.push({
-        x, y, angle,
+        x, y, prevX: x, prevY: y, angle,
         vx: Math.cos(angle) * 10, vy: Math.sin(angle) * 10,
         damage, size, owner, ricochet, bounces: 0,
     });
 }
 
+// Segment–AABB intersection test used for anti-tunneling.
+// Returns true if the segment (x0,y0)→(x1,y1) intersects the AABB (l,r,t,b).
+function _segAABB(x0, y0, x1, y1, l, r, t, b) {
+    // Early accept: either endpoint inside
+    if (x0 >= l && x0 <= r && y0 >= t && y0 <= b) return true;
+    if (x1 >= l && x1 <= r && y1 >= t && y1 <= b) return true;
+    // Slab method — check each axis interval overlap
+    let tMin = 0, tMax = 1;
+    const dx = x1 - x0, dy = y1 - y0;
+    if (Math.abs(dx) > 1e-6) {
+        const tx1 = (l - x0) / dx, tx2 = (r - x0) / dx;
+        tMin = Math.max(tMin, Math.min(tx1, tx2));
+        tMax = Math.min(tMax, Math.max(tx1, tx2));
+    } else if (x0 < l || x0 > r) return false;
+    if (Math.abs(dy) > 1e-6) {
+        const ty1 = (t - y0) / dy, ty2 = (b - y0) / dy;
+        tMin = Math.max(tMin, Math.min(ty1, ty2));
+        tMax = Math.min(tMax, Math.max(ty1, ty2));
+    } else if (y0 < t || y0 > b) return false;
+    return tMin <= tMax;
+}
+
 function updateProjectiles(dt) {
     for (let i = projectiles.length - 1; i >= 0; i--) {
         const p = projectiles[i];
+        // Store previous position for ray-cast tunneling fix
+        p.prevX = p.x; p.prevY = p.y;
         p.x += p.vx; p.y += p.vy;
 
         if (p.x < 0 || p.x > CFG.WORLD) { if (p.bounces < p.ricochet) { p.vx *= -1; p.bounces++; } else { swapPop(projectiles, i); continue; } }
@@ -1690,9 +2097,43 @@ function updateProjectiles(dt) {
         let hitObs = false;
         for (let j = 0; j < _obsQueryLen; j++) {
             const obs = _obsQueryBuf[j];
-            if (obs.type === 'gas' || obs.type === 'arena') continue;
-            if (p.x >= obs.x - obs.w / 2 - 4 && p.x <= obs.x + obs.w / 2 + 4 &&
-                p.y >= obs.y - obs.h / 2 - 4 && p.y <= obs.y + obs.h / 2 + 4) {
+            if (obs.dead) continue;
+
+            // ── Gas barrel: bullet deals damage, detonates on hp ≤ 0 ──────────────────
+            if (obs.type === 'gas' && !obs.dead) {
+                const ol = obs.x - obs.w/2 - 6, or_ = obs.x + obs.w/2 + 6;
+                const ot = obs.y - obs.h/2 - 6, ob_ = obs.y + obs.h/2 + 6;
+                if (_segAABB(p.prevX, p.prevY, p.x, p.y, ol, or_, ot, ob_)) {
+                    obs.hp -= p.damage;
+                    if (obs.hp <= 0) explodeGasBarrel(obs);
+                    swapPop(projectiles, i);
+                    hitObs = true;
+                    break;
+                }
+                continue; // gas doesn't block non-damaging pass if hp still > 0 here
+            }
+
+            if (obs.type === 'acid' || obs.type === 'arena' || obs.type === 'bush') continue;
+            // Skip non-blocker flags (tnt handled below, gas handled above)
+            if (!(obs.flags & OBS_F.BLOCKER)) continue;
+
+            const ol = obs.x - obs.w / 2 - 4, or_ = obs.x + obs.w / 2 + 4;
+            const ot = obs.y - obs.h / 2 - 4, ob_ = obs.y + obs.h / 2 + 4;
+            // Ray-cast from prevPos to curPos — catches tunneling on lag spikes
+            if (_segAABB(p.prevX, p.prevY, p.x, p.y, ol, or_, ot, ob_)) {
+                if (obs.type === 'tnt' && obs.active) {
+                    // Bullet hitting TNT detonates it
+                    obs.active = false;
+                    const ex = obs.x, ey = obs.y;
+                    for (let ei2 = enemies.length - 1; ei2 >= 0; ei2--) {
+                        if (Math.hypot(enemies[ei2].x - ex, enemies[ei2].y - ey) < 120)
+                            damageEnemy(enemies[ei2], 80, 'me');
+                    }
+                    if (onScreen(ex, ey, 130)) {
+                        for (let pp2 = 0; pp2 < 20; pp2++) spawnParticle(ex, ey, '#ff6600', 5 + Math.random() * 5);
+                        shakeCamera(12);
+                    }
+                }
                 if (p.bounces < p.ricochet) { p.vx *= -1; p.bounces++; }
                 else hitObs = true;
                 break;
@@ -1745,6 +2186,7 @@ function spawnEnemies() {
         damage: td.dmg, size: td.sz, color: td.color, xpValue: td.xp, scoreValue: td.sc,
         ghost: td.ghost, shooter: td.shooter, charger: td.charger, toxic: td.toxic,
         spider: td.spider, dragon: td.dragon,
+        kamikaze: td.kamikaze || false, healer: td.healer || false, sniper: td.sniper || false,
         angle2: 0, moveAngle: 0,
         charging: false, chargeDir: 0, chargeTimer: 0, lastShot: 0, slowTimer: 0,
     });
@@ -1804,7 +2246,8 @@ function updateEnemies(dt) {
             queryNearbyObs(rayX, rayY);
             for (let oi = 0; oi < _obsQueryLen; oi++) {
                 const obs = _obsQueryBuf[oi];
-                if (obs.type === 'arena' || obs.type === 'gas') continue;
+                // Only solid+blocker obstacles matter for wall avoidance steering
+                if (!(obs.flags & OBS_F.SOLID) || obs.dead) continue;
                 const ol = obs.x - obs.w / 2, or_ = obs.x + obs.w / 2;
                 const ot = obs.y - obs.h / 2, ob_ = obs.y + obs.h / 2;
                 if (rayX > ol && rayX < or_ && rayY > ot && rayY < ob_) {
@@ -1849,6 +2292,87 @@ function updateEnemies(dt) {
                         spawnParticle(e.x + Math.cos(baseAng) * 20, e.y + Math.sin(baseAng) * 20, '#ff4400', 4 + Math.random() * 3, 0.4);
                 }
             }
+        } else if (e.kamikaze) {
+            // ── KAMIKAZE: marche normalement, puis accélération brutale à portée ──────────
+            // Phase 1 — Approche lente tant que loin
+            // Phase 2 — Dash frénétique à < 350px
+            if (!e._kamiDash && dist < 350) {
+                // Activer le dash : mémoriser direction + timer
+                e._kamiDash = true;
+                e._kamiDir  = Math.atan2(dy, dx);
+                e._kamiTimer = 800; // ms
+            }
+            if (e._kamiDash) {
+                e._kamiTimer -= dt;
+                if (e._kamiTimer <= 0) e._kamiDash = false; // reset si raté
+                e.x += Math.cos(e._kamiDir) * spd * 4.5 + wallForceX * spd;
+                e.y += Math.sin(e._kamiDir) * spd * 4.5 + wallForceY * spd;
+            } else {
+                e.x += (dx / dist) * spd * 0.85 + wallForceX * spd;
+                e.y += (dy / dist) * spd * 0.85 + wallForceY * spd;
+            }
+        } else if (e.healer) {
+            // ── SOIGNEUR: fuit le joueur, reste à distance, soigne les alliés proches ─────
+            //   Fuir si le joueur est trop proche (< 250px), sinon stationner
+            if (dist < 280) {
+                // Recule à l'opposé du joueur
+                e.x -= (dx / dist) * spd * 1.1 + wallForceX * spd;
+                e.y -= (dy / dist) * spd * 1.1 + wallForceY * spd;
+            } else if (dist > 450) {
+                // S'approche doucement si trop loin des alliés
+                e.x += (dx / dist) * spd * 0.4;
+                e.y += (dy / dist) * spd * 0.4;
+            }
+            // Soigner les alliés proches via la grille ennemie (O(1)) toutes les 1.5s
+            if (now - (e.lastShot || 0) > 1500) {
+                e.lastShot = now;
+                queryEnemiesNear(e.x, e.y);
+                for (let k2 = 0; k2 < _egBufLen; k2++) {
+                    const ally = enemies[_egBuf[k2]];
+                    if (!ally || ally === e) continue;
+                    const healDist = Math.hypot(ally.x - e.x, ally.y - e.y);
+                    if (healDist < CFG.EGRID_CELL * 1.5) {
+                        ally.health = Math.min(ally.maxHealth, ally.health + 12);
+                        // Particule de soin verte sur l'allié soigné
+                        if (onScreen(ally.x, ally.y, ally.size + 10) && showDeathParticles)
+                            spawnParticle(ally.x, ally.y, '#00e676', 3, 0.6);
+                    }
+                }
+            }
+        } else if (e.sniper) {
+            // ── SNIPER: s'approche jusqu'à sa position de tir, puis STOP + vise + tire ────
+            //   Zone de confort : 260–360px. Dans cette zone, il s'immobilise et charge son tir.
+            const sniperMin = 260, sniperMax = 380;
+            if (dist > sniperMax) {
+                // Approche à vitesse normale
+                e.x += (dx / dist) * spd + wallForceX * spd;
+                e.y += (dy / dist) * spd + wallForceY * spd;
+                e._sniperCharging = false;
+            } else if (dist < sniperMin) {
+                // Trop proche : recule
+                e.x -= (dx / dist) * spd * 0.8;
+                e.y -= (dy / dist) * spd * 0.8;
+                e._sniperCharging = false;
+            } else {
+                // Dans la zone : chargement du tir (2.5s de charge)
+                e._sniperCharging = true;
+                e._sniperCharge = (e._sniperCharge || 0) + dt;
+                if (e._sniperCharge >= 2500 && now - e.lastShot > 500) {
+                    // Tir chargé : 1 projectile lent mais énorme
+                    const sniperAng = Math.atan2(dy, dx);
+                    // Le projectile sniper est lent (spd 4) mais grand (sz 10) et très puissant
+                    projectiles.push({
+                        x: e.x, y: e.y, angle: sniperAng,
+                        vx: Math.cos(sniperAng) * 4, vy: Math.sin(sniperAng) * 4,
+                        damage: e.damage * 1.5, size: 10, owner: e.id, ricochet: 0, bounces: 0,
+                        prevX: e.x, prevY: e.y, // track previous pos for tunneling correction
+                    });
+                    e.lastShot = now;
+                    e._sniperCharge = 0;
+                    // Visual flash
+                    if (onScreen(e.x, e.y, 40)) shakeCamera(3);
+                }
+            }
         } else if (e.charger) {
             if (!e.charging && dist < 500) {
                 e.charging = true; e.chargeDir = Math.atan2(dy, dx); e.chargeTimer = 700;
@@ -1882,6 +2406,9 @@ function updateEnemies(dt) {
         }
 
         if (!e.ghost) checkEntityObsCollision(e);
+        // Bush slow: 20% speed penalty when inside a bush overlay area.
+        // inBush is set by checkEntityObsCollision using OBS_F.BUSH bitmask.
+        if (e.inBush) spd *= 0.8;
 
         // ── Compute actual movement angle from pre/post positions (Zero GC, no new obj) ──
         const mdx = e.x - prevX, mdy = e.y - prevY;
@@ -1913,21 +2440,23 @@ function updateEnemies(dt) {
         e._lastX = e.x; e._lastY = e.y;
 
         // ============================================================
-        //  SEPARATION FORCE — windowed scan, higher player-direction priority
+        //  SEPARATION FORCE — via EGRID spatial grid (O(1) neighbour
+        //  lookup vs old O(n·W) windowed scan). Keeps formations loose
+        //  while still steering the horde toward the player.
         // ============================================================
         if (onScreen(e.x, e.y, 200)) {
-            const W = CFG.SEP_WINDOW;
-            const start = Math.max(0, i - W);
-            const end = Math.min(enemies.length - 1, i + W);
-            for (let j = start; j <= end; j++) {
+            queryEnemiesNear(e.x, e.y);
+            for (let k = 0; k < _egBufLen; k++) {
+                const j = _egBuf[k];
                 if (j === i) continue;
                 const oth = enemies[j];
+                if (!oth) continue;
                 const sdx = e.x - oth.x, sdy = e.y - oth.y;
                 const sd2 = sdx * sdx + sdy * sdy;
                 const minD = (e.size + oth.size) * 0.7;
                 if (sd2 < minD * minD && sd2 > 0.0001) {
                     const sd = Math.sqrt(sd2);
-                    // Separation force — scaled down slightly to keep group cohesion toward player
+                    // Separation force — slightly dampened to keep horde cohesion
                     const force = (minD - sd) / minD * CFG.SEP_FORCE * 0.85;
                     e.x += (sdx / sd) * force;
                     e.y += (sdy / sd) * force;
@@ -1937,6 +2466,33 @@ function updateEnemies(dt) {
 
         e.x = Math.max(0, Math.min(CFG.WORLD, e.x));
         e.y = Math.max(0, Math.min(CFG.WORLD, e.y));
+
+        // ── TNT barrel proximity: explode if enemy steps within trigger radius ────────────────
+        for (let oi = 0; oi < obstacles.length; oi++) {
+            const obs = obstacles[oi];
+            if (obs.type !== 'tnt' || !obs.active) continue;
+            if (Math.hypot(e.x - obs.x, e.y - obs.y) < 32 + e.size) {
+                // Explode: AOE 120px, high damage
+                obs.active = false;
+                const ex = obs.x, ey = obs.y;
+                for (let ei2 = enemies.length - 1; ei2 >= 0; ei2--) {
+                    if (Math.hypot(enemies[ei2].x - ex, enemies[ei2].y - ey) < 120)
+                        damageEnemy(enemies[ei2], 80, 'me');
+                }
+                if (Math.hypot(player.x - ex, player.y - ey) < 120 && player.alive) {
+                    const bootsMult = 1 + 0.1 * player.bonuses.boots;
+                    player.health -= 20 * bootsMult;
+                }
+                if (onScreen(ex, ey, 130)) {
+                    for (let p = 0; p < 20; p++) spawnParticle(ex, ey, '#ff6600', 5 + Math.random() * 5);
+                    for (let p = 0; p < 10; p++) spawnParticle(ex, ey, '#ffdd00', 4 + Math.random() * 4, 1.4);
+                    shakeCamera(12);
+                }
+                if (isHost) broadcastFXToNearby('blast', ex, ey, null);
+                if (gameMode === 'client' && hostConn?.open) hostConn.send({ t: 'fx', k: 'blast', x: Math.round(ex), y: Math.round(ey) });
+                break;
+            }
+        }
 
         // Walk animation clock (used for squash/stretch in draw)
         e.angle2 = (e.angle2 || 0) + spd * 0.08;
@@ -1953,22 +2509,57 @@ function updateEnemies(dt) {
 }
 
 // ===================================================================
-//  COLLISION HELPERS
+//  COLLISION HELPERS — Logic layer (no rendering, no allocs)
 // ===================================================================
+
+// checkEntityObsCollision — resolves solid obstacle penetration for any entity.
+// Uses obs.flags bitmask to classify behaviour in O(1) instead of string comparison.
+//   OBS_F.SOLID   → AABB push-out (standard walls, boxes, buildings)
+//   OBS_F.CIRCULAR → circle-vs-circle trunk collision (trees)
+//   OBS_F.BUSH    → no push-out, but sets entity.inBush flag for slow check
+// Entities must have {x, y, size, inBush?}.
 function checkEntityObsCollision(entity) {
+    entity.inBush = false; // reset per-frame; set true if inside any bush
     queryNearbyObs(entity.x, entity.y);
     for (let i = 0; i < _obsQueryLen; i++) {
         const obs = _obsQueryBuf[i];
-        if (obs.type === 'arena' || obs.type === 'gas') continue;
-        const el = entity.x - entity.size, er = entity.x + entity.size;
-        const et = entity.y - entity.size, eb = entity.y + entity.size;
-        const ol = obs.x - obs.w / 2, or_ = obs.x + obs.w / 2;
-        const ot = obs.y - obs.h / 2, ob_ = obs.y + obs.h / 2;
-        if (er > ol && el < or_ && eb > ot && et < ob_) {
-            const ox = Math.min(er - ol, or_ - el);
-            const oy = Math.min(eb - ot, ob_ - et);
-            if (ox < oy) { entity.x += entity.x < obs.x ? -ox : ox; }
-            else { entity.y += entity.y < obs.y ? -oy : oy; }
+        if (obs.dead) continue;
+
+        // ── Bush: no push-out, just flag the entity ───────────────────
+        if (obs.flags & OBS_F.BUSH) {
+            if (Math.hypot(entity.x - obs.x, entity.y - obs.y) < obs.radius + entity.size)
+                entity.inBush = true;
+            continue;
+        }
+
+        // ── Non-solid passthrough obstacles ───────────────────────────
+        if (!(obs.flags & OBS_F.SOLID)) continue;
+
+        if (obs.flags & OBS_F.CIRCULAR) {
+            // ── Tree trunk: circle–circle push-out ────────────────────
+            // Only the trunk (trunkR) creates solid collision;
+            // the foliage (foliageR) is purely decorative.
+            const tR = (obs.trunkR || 8) + entity.size;
+            const dx = entity.x - obs.x, dy = entity.y - obs.y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < tR * tR && d2 > 0.0001) {
+                const d = Math.sqrt(d2);
+                const pen = tR - d;
+                entity.x += (dx / d) * pen;
+                entity.y += (dy / d) * pen;
+            }
+        } else {
+            // ── AABB push-out ──────────────────────────────────────────
+            const el = entity.x - entity.size, er = entity.x + entity.size;
+            const et = entity.y - entity.size, eb = entity.y + entity.size;
+            const ol = obs.x - obs.w / 2, or_ = obs.x + obs.w / 2;
+            const ot = obs.y - obs.h / 2, ob_ = obs.y + obs.h / 2;
+            if (er > ol && el < or_ && eb > ot && et < ob_) {
+                const ox = Math.min(er - ol, or_ - el);
+                const oy = Math.min(eb - ot, ob_ - et);
+                if (ox < oy) entity.x += entity.x < obs.x ? -ox : ox;
+                else         entity.y += entity.y < obs.y ? -oy : oy;
+            }
         }
     }
 }
@@ -2297,14 +2888,21 @@ function renderMinimap() {
     mctx.fillStyle = 'rgba(0,0,0,0.85)';
     mctx.fillRect(0, 0, S, S);
 
-    mctx.fillStyle = 'rgba(30,60,30,0.3)';  mctx.fillRect(0, 0, S, S / 2);
-    mctx.fillStyle = 'rgba(60,50,20,0.3)';  mctx.fillRect(0, S / 2, S, S / 2);
-    mctx.fillStyle = 'rgba(20,20,60,0.3)';  mctx.fillRect(S / 3, S / 4, S / 3, S / 2);
+    // Tint minimap background with current biome colour
+    mctx.fillStyle = currentBiome.ambientCol || 'rgba(20,20,60,0.3)';
+    mctx.fillRect(0, 0, S, S);
 
     mctx.fillStyle = 'rgba(255,255,255,0.12)';
     for (const obs of obstacles) {
-        if (obs.type === 'arena') continue;
-        mctx.fillRect(obs.x * scale - 1, obs.y * scale - 1, 2, 2);
+        if (obs.dead) continue;
+        if (obs.type === 'arena' || obs.type === 'acid' || obs.type === 'bush') continue;
+        if (obs.type === 'tnt') {
+            mctx.fillStyle = 'rgba(255,80,20,0.6)';
+            mctx.fillRect(obs.x * scale - 1, obs.y * scale - 1, 2, 2);
+            mctx.fillStyle = 'rgba(255,255,255,0.12)';
+        } else {
+            mctx.fillRect(obs.x * scale - 1, obs.y * scale - 1, 2, 2);
+        }
     }
     mctx.fillStyle = '#f5576c';
     for (const e of enemies) {
@@ -2315,11 +2913,16 @@ function renderMinimap() {
         mctx.fillStyle = '#2ecc71';
         mctx.beginPath(); mctx.arc((rp.x || 0) * scale, (rp.y || 0) * scale, 3, 0, Math.PI * 2); mctx.fill();
     });
-    mctx.fillStyle = spectatorMode ? 'rgba(255,255,255,0.4)' : '#667eea';
+    mctx.fillStyle = spectatorMode ? 'rgba(255,255,255,0.4)' : playerAuraColor;
     mctx.beginPath(); mctx.arc(player.x * scale, player.y * scale, 4, 0, Math.PI * 2); mctx.fill();
 
     mctx.strokeStyle = 'rgba(255,255,255,0.3)'; mctx.lineWidth = 1.5;
     mctx.strokeRect(0, 0, S, S);
+
+    // Biome name label inside minimap
+    mctx.fillStyle = 'rgba(255,255,255,0.55)';
+    mctx.font = '8px sans-serif'; mctx.textAlign = 'center'; mctx.textBaseline = 'bottom';
+    mctx.fillText(currentBiome.name, S / 2, S - 3);
 }
 
 // ===================================================================
@@ -2360,15 +2963,22 @@ function render() {
 
 function drawWorld() {
     const W = CFG.WORLD;
+    // ── Biome-aware ground gradient — colors from currentBiome ──────────────────────────────────
     const grad = ctx.createLinearGradient(0, 0, 0, W);
-    grad.addColorStop(0,   '#0d1a0d');
-    grad.addColorStop(0.4, '#1a1a2e');
-    grad.addColorStop(0.7, '#1a1a2e');
-    grad.addColorStop(1,   '#2a2010');
+    grad.addColorStop(0, currentBiome.groundA);
+    grad.addColorStop(0.5, currentBiome.groundB);
+    grad.addColorStop(1, currentBiome.groundA);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, W);
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.025)'; ctx.lineWidth = 1;
+    // ── Ambient glow overlay (biome atmosphere) ──────────────────────────────────────────────────
+    if (!perfMode) {
+        ctx.fillStyle = currentBiome.ambientCol;
+        ctx.fillRect(0, 0, W, W);
+    }
+
+    // ── Grid lines tinted with biome colour ─────────────────────────────────────────────────────
+    ctx.strokeStyle = currentBiome.gridCol || 'rgba(255,255,255,0.025)'; ctx.lineWidth = 1;
     const gStep = 200;
     const startX = Math.floor(scrL / gStep) * gStep;
     const startY = Math.floor(scrT / gStep) * gStep;
@@ -2382,13 +2992,89 @@ function drawWorld() {
     ctx.strokeStyle = 'rgba(255,60,60,0.6)'; ctx.lineWidth = 6;
     ctx.strokeRect(2, 2, W - 4, W - 4);
 
+    // ──────────────────────────────────────────────────────────────────────────────────────
+    //  OBSTACLE RENDERING — multi-pass to respect natural layering:
+    //    Pass 1: Acid pools & bush ground cover (always behind everything)
+    //    Pass 2: Tree foliage behind entities (drawn before player/enemies)
+    //    Pass 3: Solid structures, gas barrels, TNT, decorative arenas
+    //    Pass 4: Tree foliage overlay in front of trunk (see render() call order)
+    //
+    //  Dead obstacles (gas barrels destroyed at runtime) are skipped here;
+    //  they remain in the array until next buildObsGrid but are invisible.
+    // ──────────────────────────────────────────────────────────────────────────────────────
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+    // ── Pass 1: Ground-level effects (acid, bush) ─────────────────────────────────────────
     for (const obs of obstacles) {
-        if (!onScreen(obs.x, obs.y, Math.max(obs.w || 200, obs.h || 200))) continue;
+        if (obs.dead) continue;
+        if (!onScreen(obs.x, obs.y, Math.max(obs.w || 100, obs.h || 100))) continue;
+
+        if (obs.type === 'acid') {
+            const pulse = perfMode ? 0.25 : 0.18 + Math.sin(Date.now() * 0.003 + obs.x * 0.001) * 0.07;
+            ctx.fillStyle = `rgba(60,200,60,${pulse})`;
+            ctx.beginPath(); ctx.arc(obs.x, obs.y, obs.w / 2, 0, Math.PI * 2); ctx.fill();
+            if (!perfMode) {
+                ctx.shadowBlur = 18; ctx.shadowColor = '#00e676';
+                ctx.strokeStyle = 'rgba(80,255,80,0.4)'; ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.shadowBlur = 0;
+            }
+            ctx.font = `${obs.w * 0.35}px serif`;
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.fillText(obs.emoji, obs.x, obs.y);
+            continue;
+        }
+
+        if (obs.type === 'bush') {
+            // Bushes: ground-level circles with leaf texture — no shadow in perf mode
+            if (!perfMode) { ctx.shadowBlur = 6; ctx.shadowColor = '#1a5c1a'; }
+            const r = obs.radius || obs.w / 2;
+            ctx.fillStyle = perfMode ? 'rgba(30,100,30,0.55)' : 'rgba(30,90,30,0.45)';
+            ctx.beginPath(); ctx.arc(obs.x, obs.y, r, 0, Math.PI * 2); ctx.fill();
+            if (!perfMode) {
+                ctx.fillStyle = 'rgba(50,140,50,0.3)';
+                ctx.beginPath(); ctx.arc(obs.x - r * 0.25, obs.y - r * 0.3, r * 0.65, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.font = `${r * 0.9}px serif`;
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.fillText(obs.emoji, obs.x, obs.y - r * 0.15);
+            if (!perfMode) ctx.shadowBlur = 0;
+        }
+    }
+
+    // ── Pass 2: Tree foliage BEHIND entities (gives depth illusion) ───────────────────────
+    for (const obs of obstacles) {
+        if (obs.dead || obs.type !== 'tree') continue;
+        if (!onScreen(obs.x, obs.y, obs.foliageR || obs.w / 2)) continue;
+        const fR = obs.foliageR || obs.w / 2;
+        // Foliage: three overlapping circles for a canopy silhouette
+        if (!perfMode) {
+            ctx.fillStyle = 'rgba(10,50,10,0.55)';
+            ctx.beginPath(); ctx.arc(obs.x, obs.y, fR, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(20,80,20,0.4)';
+            ctx.beginPath(); ctx.arc(obs.x - fR * 0.3, obs.y - fR * 0.25, fR * 0.7, 0, Math.PI * 2); ctx.fill();
+            ctx.beginPath(); ctx.arc(obs.x + fR * 0.25, obs.y - fR * 0.2, fR * 0.6, 0, Math.PI * 2); ctx.fill();
+        } else {
+            ctx.fillStyle = 'rgba(15,60,15,0.5)';
+            ctx.beginPath(); ctx.arc(obs.x, obs.y, fR, 0, Math.PI * 2); ctx.fill();
+        }
+        // Trunk
+        const tR = obs.trunkR || 8;
+        ctx.fillStyle = '#5c3d1e';
+        ctx.beginPath(); ctx.arc(obs.x, obs.y + fR * 0.1, tR, 0, Math.PI * 2); ctx.fill();
+        // Emoji label
+        ctx.font = `${tR * 2.2}px serif`;
+        ctx.fillText(obs.emoji, obs.x, obs.y - fR * 0.1);
+    }
+
+    // ── Pass 3: Solid structures, TNT, gas barrels, arenas ───────────────────────────────
+    for (const obs of obstacles) {
+        if (obs.dead) continue;
+        if (!onScreen(obs.x, obs.y, Math.max(obs.w || 100, obs.h || 100))) continue;
 
         if (obs.type === 'arena') {
-            if (!perfMode) { ctx.strokeStyle = 'rgba(255,200,50,0.3)'; ctx.lineWidth = 3; }
-            else { ctx.strokeStyle = 'rgba(255,200,50,0.2)'; ctx.lineWidth = 1; }
+            ctx.strokeStyle = perfMode ? 'rgba(255,200,50,0.2)' : 'rgba(255,200,50,0.3)';
+            ctx.lineWidth = perfMode ? 1 : 3;
             ctx.beginPath(); ctx.arc(obs.x, obs.y, obs.radius || 150, 0, Math.PI * 2); ctx.stroke();
             if (!perfMode) {
                 ctx.font = `${(obs.radius || 150) * 0.18}px serif`;
@@ -2397,18 +3083,59 @@ function drawWorld() {
             continue;
         }
 
+        if (obs.type === 'tnt') {
+            if (!obs.active) continue; // detonated TNT disappears
+            if (!perfMode) {
+                ctx.shadowBlur = 12; ctx.shadowColor = '#ff4400';
+                ctx.fillStyle = 'rgba(255,80,0,0.15)';
+                ctx.beginPath(); ctx.arc(obs.x, obs.y, 60, 0, Math.PI * 2); ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+            ctx.fillStyle = 'rgba(180,30,0,0.6)';
+            ctx.fillRect(obs.x - obs.w / 2, obs.y - obs.h / 2, obs.w, obs.h);
+            ctx.font = `${obs.w * 0.9}px serif`;
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.fillText(obs.emoji, obs.x, obs.y);
+            continue;
+        }
+
+        // ── Gas barrel with HP bar ────────────────────────────────────────────────────────
+        if (obs.type === 'gas') {
+            const hpPct = (obs.maxHp > 0) ? Math.max(0, obs.hp / obs.maxHp) : 1;
+            if (!perfMode) {
+                // Glow intensity scales with damage taken
+                const dmgPct = 1 - hpPct;
+                ctx.shadowBlur = 8 + dmgPct * 16; ctx.shadowColor = `rgba(255,${150 - dmgPct * 120 | 0},0,0.8)`;
+            }
+            ctx.fillStyle = `rgba(255,${180 - (1 - hpPct) * 130 | 0},50,0.25)`;
+            ctx.fillRect(obs.x - obs.w / 2, obs.y - obs.h / 2, obs.w, obs.h);
+            if (!perfMode) ctx.shadowBlur = 0;
+            const fs = Math.max(16, Math.min(40, obs.w * (obs.es || 1.0) * 0.55));
+            ctx.font = fs + 'px serif';
+            ctx.fillText(obs.emoji, obs.x, obs.y);
+            // HP bar — only show when damaged
+            if (hpPct < 1) {
+                ctx.fillStyle = 'rgba(0,0,0,0.6)';
+                ctx.fillRect(obs.x - obs.w / 2, obs.y - obs.h / 2 - 8, obs.w, 5);
+                ctx.fillStyle = hpPct > 0.5 ? '#2ecc71' : hpPct > 0.25 ? '#ffa500' : '#f5576c';
+                ctx.fillRect(obs.x - obs.w / 2, obs.y - obs.h / 2 - 8, obs.w * hpPct, 5);
+            }
+            continue;
+        }
+
+        // Skip bush, acid, tree — already rendered above
+        if (obs.type === 'bush' || obs.type === 'acid' || obs.type === 'tree') continue;
+
+        // ── Generic solid obstacle (wall, box, house, building) ──────────────────────────
         if (!perfMode) {
             ctx.fillStyle = 'rgba(0,0,0,0.35)';
             ctx.fillRect(obs.x - obs.w / 2 + 4, obs.y - obs.h / 2 + 4, obs.w, obs.h);
         }
-
-        ctx.fillStyle = obs.type === 'wall' ? 'rgba(80,80,100,0.6)' :
-                        obs.type === 'building' ? 'rgba(40,40,80,0.7)' :
-                        obs.type === 'gas' ? 'rgba(255,200,50,0.2)' : 'rgba(60,60,80,0.4)';
+        ctx.fillStyle = obs.type === 'wall'     ? 'rgba(80,80,100,0.6)'  :
+                        obs.type === 'building' ? 'rgba(40,40,80,0.7)'   : 'rgba(60,60,80,0.4)';
         ctx.fillRect(obs.x - obs.w / 2, obs.y - obs.h / 2, obs.w, obs.h);
-
-        const fs = Math.max(12, Math.min(40, Math.min(obs.w, obs.h) * (obs.es || 1.0) * 0.6));
-        ctx.font = fs + 'px serif';
+        const fs2 = Math.max(12, Math.min(40, Math.min(obs.w, obs.h) * (obs.es || 1.0) * 0.6));
+        ctx.font = fs2 + 'px serif';
         ctx.fillText(obs.emoji, obs.x, obs.y);
     }
 }
@@ -2558,6 +3285,51 @@ function drawEnemiesBatched() {
         ctx.beginPath(); ctx.arc(en.x, en.y, en.size + 2, 0, Math.PI * 2); ctx.fill();
         ctx.globalAlpha = 1;
     }
+
+    // ── Phase 4: Special visual overlays for new enemy types ─────────────────────────────
+    if (!perfMode) {
+        for (const en of visible) {
+            const td = ET[en.type];
+            if (!td) continue;
+
+            // Sniper: pulsing red charge ring that fills up over 2.5s
+            if (td.sniper && en._sniperCharging && en._sniperCharge > 0) {
+                const chargePct = Math.min(1, en._sniperCharge / 2500);
+                ctx.globalAlpha = 0.7 * chargePct;
+                ctx.strokeStyle = `hsl(${350 - chargePct * 80}, 100%, 60%)`;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                // Arc from top clockwise proportional to charge
+                ctx.arc(en.x, en.y, en.size + 10, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * chargePct);
+                ctx.stroke();
+                // Laser sight: thin red line toward player
+                ctx.globalAlpha = 0.3 * chargePct;
+                ctx.strokeStyle = '#ff4081';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([6, 6]);
+                ctx.beginPath();
+                ctx.moveTo(en.x, en.y);
+                ctx.lineTo(player.x, player.y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.globalAlpha = 1;
+            }
+
+            // Healer: green healing aura pulse
+            if (td.healer) {
+                const pulse = 0.06 + Math.sin(en.angle2 * 3) * 0.03;
+                ctx.fillStyle = `rgba(0,230,118,${pulse})`;
+                ctx.beginPath(); ctx.arc(en.x, en.y, en.size * 3, 0, Math.PI * 2); ctx.fill();
+            }
+
+            // Kamikaze dash warning: orange glow when charging
+            if (td.kamikaze && en._kamiDash) {
+                const glow = 0.12 + Math.sin(Date.now() * 0.02) * 0.06;
+                ctx.fillStyle = `rgba(255,107,53,${glow})`;
+                ctx.beginPath(); ctx.arc(en.x, en.y, en.size * 2.5, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+    }
 }
 
 function drawProjectiles() {
@@ -2638,23 +3410,28 @@ function drawPlayerSprite(p, isLocal) {
     const alive = p.alive !== false;
     if (!alive) ctx.globalAlpha = 0.3;
 
-    // === DYNAMIC PULSING AURA (playerAuraColor) ===
-    if (isLocal && !perfMode) {
+    // Resolve this player's aura color:
+    //   local player → playerAuraColor (updated from settings)
+    //   remote player → p.ac synced from sendPlayerInfo
+    const auraCol = isLocal ? playerAuraColor : (p.ac || '#2ecc71');
+
+    // === DYNAMIC PULSING AURA ===
+    if (!perfMode) {
         const t = Date.now();
         const pulse = 0.12 + Math.sin(t * 0.0035) * 0.05;
         const baseR = 38;
         const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, baseR);
-        // Convert hex to rgba helper
         const hexToRgba = (hex, a) => {
             const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
             return `rgba(${r},${g},${b},${a})`;
         };
-        grad.addColorStop(0, hexToRgba(playerAuraColor, pulse * 2));
-        grad.addColorStop(1, hexToRgba(playerAuraColor, 0));
+        grad.addColorStop(0, hexToRgba(auraCol, pulse * 2));
+        grad.addColorStop(1, hexToRgba(auraCol, 0));
         ctx.fillStyle = grad;
         ctx.beginPath(); ctx.arc(p.x, p.y, baseR, 0, Math.PI * 2); ctx.fill();
     }
-    // Bonus fire aura
+
+    // Bonus fire aura (local player only — remotes don't sync aura bonus count)
     if (isLocal && player.bonuses.aura > 0 && !perfMode) {
         const aurR = 80 + player.bonuses.aura * 10;
         const grad2 = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, aurR);
@@ -2671,7 +3448,7 @@ function drawPlayerSprite(p, isLocal) {
     ctx.font = `${sz}px serif`;
     if (!perfMode) {
         ctx.shadowBlur = isLocal ? 18 : 8;
-        ctx.shadowColor = isLocal ? playerAuraColor : '#2ecc71';
+        ctx.shadowColor = auraCol;
     }
     ctx.fillText(p.emoji || p.e || '😎', p.x, p.y);
     if (!perfMode) ctx.shadowBlur = 0;
@@ -2692,23 +3469,55 @@ function drawPlayerSprite(p, isLocal) {
     ctx.globalAlpha = 1;
 }
 
+// drawDrones — renders both local and remote player drones.
+// Local drones use the live player.droneAngle (updated 60fps).
+// Remote drones advance locally at the same angular velocity (0.02 rad/frame)
+// from the last synced da value — this avoids jitter from 30fps network ticks
+// while remaining visually accurate.
 function drawDrones() {
-    if (player.bonuses.drones <= 0) return;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = '22px serif';
-    for (let i = 0; i < player.bonuses.drones; i++) {
-        const ang = player.droneAngle + i * Math.PI * 2 / player.bonuses.drones;
-        const dx = player.x + Math.cos(ang) * 60;
-        const dy = player.y + Math.sin(ang) * 60;
-        if (!onScreen(dx, dy, 20)) continue;
-        if (!perfMode) { ctx.shadowBlur = 8; ctx.shadowColor = '#667eea'; }
-        ctx.fillText('🤖', dx, dy);
-        if (!perfMode) { ctx.shadowBlur = 0; }
-        ctx.strokeStyle = 'rgba(102,126,234,0.3)'; ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(dx, dy); ctx.stroke();
-        ctx.setLineDash([]);
+
+    // ── Local player drones ────────────────────────────────────────────────────────────────
+    if (player.bonuses.drones > 0) {
+        ctx.font = '22px serif';
+        for (let i = 0; i < player.bonuses.drones; i++) {
+            const ang = player.droneAngle + i * Math.PI * 2 / player.bonuses.drones;
+            const dx = player.x + Math.cos(ang) * 60;
+            const dy = player.y + Math.sin(ang) * 60;
+            if (!onScreen(dx, dy, 20)) continue;
+            if (!perfMode) { ctx.shadowBlur = 8; ctx.shadowColor = '#667eea'; }
+            ctx.fillText('🤖', dx, dy);
+            if (!perfMode) { ctx.shadowBlur = 0; }
+            ctx.strokeStyle = 'rgba(102,126,234,0.3)'; ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(dx, dy); ctx.stroke();
+            ctx.setLineDash([]);
+        }
     }
+
+    // ── Remote player drones — rendered locally from synced da/dn/ac ─────────────────────
+    Object.values(remotePlayers).forEach(rp => {
+        if (!rp.alive || !(rp.dn > 0) || rp.x === undefined) return;
+        // Advance angle locally each frame (0.02 rad = ~1.1°) from last known value
+        rp.da = (rp.da || 0) + 0.02;
+        ctx.font = '20px serif';
+        for (let i = 0; i < rp.dn; i++) {
+            const ang = rp.da + i * Math.PI * 2 / rp.dn;
+            const dx = rp.x + Math.cos(ang) * 60;
+            const dy = rp.y + Math.sin(ang) * 60;
+            if (!onScreen(dx, dy, 20)) continue;
+            if (!perfMode) {
+                ctx.shadowBlur = 6;
+                ctx.shadowColor = rp.ac || '#667eea';
+            }
+            ctx.fillText('🤖', dx, dy);
+            if (!perfMode) ctx.shadowBlur = 0;
+            ctx.strokeStyle = `rgba(102,126,234,0.2)`; ctx.lineWidth = 1;
+            ctx.setLineDash([3, 5]);
+            ctx.beginPath(); ctx.moveTo(rp.x, rp.y); ctx.lineTo(dx, dy); ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    });
 }
 
 function drawParticlePool() {

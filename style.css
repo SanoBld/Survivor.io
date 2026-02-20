@@ -307,14 +307,14 @@ html, body {
 #waveDisplay { color: #f5576c; }
 #enemyCount  { color: #ffd700; }
 
-/* Minimap — bottom-right, above ability button */
-.minimap { position: absolute; bottom: 96px; right: 10px; text-align: center; z-index: 51; }
+/* Minimap — top-left, above leaderboard area, clear of right-side joystick */
+.minimap { position: absolute; top: 10px; left: 10px; text-align: center; z-index: 51; }
 #minimapCanvas { border-radius: 8px; border: 2px solid rgba(255,255,255,0.2); display: block; }
 .mm-label { font-size: 0.65rem; color: rgba(255,255,255,0.4); margin-top: 2px; }
 
-/* Ability */
+/* Ability — now on the LEFT side (joystick has moved to right) */
 .ability-wrap {
-    position: absolute; bottom: 20px; right: 20px;
+    position: absolute; bottom: 20px; left: 20px;
     display: flex; flex-direction: column; align-items: center; gap: 4px;
 }
 .ability-btn {
@@ -346,14 +346,13 @@ html, body {
 }
 #respawnTimer { color: #b8b0ff; font-size: 0.8rem; }
 
-/* Active bonus — dedicated bottom-left zone, clear of ability (bottom-right) and joystick */
+/* Active bonus — bottom-right, clear of joystick zone (right side) — compressed width */
 .active-bonus {
     position: absolute;
-    bottom: 12px; left: 10px;
-    /* Leave right side free for ability button (68px + 20px margin) */
-    max-width: calc(100vw - 120px);
+    bottom: 12px; right: 10px;
+    max-width: 180px;
     display: flex; gap: 5px; pointer-events: none; flex-wrap: wrap;
-    justify-content: flex-start; z-index: 51;
+    justify-content: flex-end; z-index: 51;
 }
 .bonus-pill {
     background: rgba(0,0,0,0.75);
